@@ -17,6 +17,7 @@ from addendum_generator import generate_addendum
 from template_intelligence import assess_template
 from audience_engine import build_audience_view
 from qa_engine import run_report_qa, qa_status
+from voc_engine import analyze_voc
 
 st.set_page_config(page_title="OOP Corridor Daily Operations Report", layout="wide")
 st.title("OOP Corridor Daily Operations Report")
@@ -34,6 +35,7 @@ with st.sidebar:
     st.info("Reporting date and close time are manual. They are never inferred from the latest data timestamp.")
 
 uploaded = st.file_uploader("Upload the operations dataset", type=["xlsx", "xls", "csv"])
+voc_uploaded = st.file_uploader("Upload VOC dataset (optional)", type=["xlsx", "xls", "csv"], key="voc_dataset")
 if uploaded is None:
     st.markdown("### Start here")
     st.write("Upload the SERSHO workbook or another corridor operations dataset.")
@@ -54,7 +56,20 @@ sheet_name = st.selectbox("Sheet to analyse", list(sheets.keys()), index=0)
 df = sheets[sheet_name]
 
 profile = profile_dataframe(df)
-analysis = analyze_operations(df, total_wards=int(total_wards) if total_wards else None, municipality=municipality)
+analysis = analyze_operations(df, total_wards=int(total_wards) if total_wards else None, municipality=municipality, reporting_date=reporting_date)
+
+voc_df = None
+if voc_uploaded is not None:
+    try:
+        if voc_uploaded.name.lower().endswith(".csv"):
+            voc_df = pd.read_csv(voc_uploaded, low_memory=False)
+        else:
+            vx = pd.ExcelFile(voc_uploaded)
+            voc_df = pd.read_excel(voc_uploaded, sheet_name=vx.sheet_names[0])
+        st.success(f"Loaded VOC dataset: {voc_uploaded.name}")
+    except Exception as exc:
+        st.error(f"Could not read the VOC file: {exc}")
+voc_analysis = analyze_voc(voc_df)
 intelligence = build_intelligence(analysis, total_wards=int(total_wards) if total_wards else None)
 audience_view = build_audience_view(intelligence, audience, report_requirements)
 
@@ -197,7 +212,7 @@ elif st.button("Generate OOP Corridor PowerPoint", type="primary"):
         out_dir.mkdir(exist_ok=True)
         out_path = out_dir / f"OOP_Corridor_Daily_Operations_Report_{reporting_date.strftime('%Y%m%d')}.pptx"
         try:
-            generate_powerpoint(template_path, out_path, analysis, intelligence, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"), audience_view=audience_view)
+            generate_powerpoint(template_path, out_path, analysis, intelligence, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"), audience_view=audience_view, voc_analysis=voc_analysis)
             st.success("PowerPoint report generated successfully.")
             st.download_button("Download PowerPoint report", data=out_path.read_bytes(), file_name=out_path.name, mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
         except Exception as exc:
@@ -213,7 +228,7 @@ if st.button("Generate Excel Analytical Addendum"):
     try:
         intelligence_with_qa = dict(intelligence)
         intelligence_with_qa["final_report_qa"] = final_qa
-        generate_addendum(add_path, uploaded.name, sheet_name, analysis, intelligence_with_qa, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"))
+        generate_addendum(add_path, uploaded.name, sheet_name, analysis, intelligence_with_qa, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"), voc_analysis=voc_analysis)
         st.success("Excel analytical addendum generated successfully.")
         st.download_button("Download Excel addendum", data=add_path.read_bytes(), file_name=add_path.name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception as exc:

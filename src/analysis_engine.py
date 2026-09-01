@@ -51,11 +51,14 @@ def _top_counts(df: pd.DataFrame, col: str | None, n: int = 15) -> pd.DataFrame:
     return out
 
 
-def _date_analysis(df: pd.DataFrame, col: str | None) -> dict[str, Any]:
+def _date_analysis(df: pd.DataFrame, col: str | None, reporting_date=None) -> dict[str, Any]:
     if not col or col not in df.columns:
         return {"available": False}
     dt = pd.to_datetime(df[col], errors="coerce")
     valid = dt.dropna()
+    if reporting_date is not None:
+        target = pd.Timestamp(reporting_date).date()
+        valid = valid[valid.dt.date == target]
     if valid.empty:
         return {"available": False}
     by_date = valid.dt.date.value_counts().sort_index().rename_axis("date").reset_index(name="cases")
@@ -68,6 +71,9 @@ def _date_analysis(df: pd.DataFrame, col: str | None) -> dict[str, Any]:
         "by_hour": by_hour,
         "peak_hour": int(by_hour.loc[by_hour["cases"].idxmax(), "hour"]),
         "peak_hour_cases": int(by_hour["cases"].max()),
+        "day_min_time": valid.min(),
+        "day_max_time": valid.max(),
+        "reporting_date": reporting_date,
     }
 
 
@@ -111,7 +117,7 @@ def _quality_findings(df: pd.DataFrame, cols: dict[str, str | None]) -> pd.DataF
     return pd.DataFrame(findings)
 
 
-def analyze_operations(df: pd.DataFrame, total_wards: int | None = None, municipality: str = "") -> dict[str, Any]:
+def analyze_operations(df: pd.DataFrame, total_wards: int | None = None, municipality: str = "", reporting_date=None) -> dict[str, Any]:
     cols = resolve_columns(df)
     rows = len(df)
     valid_case_mask = pd.Series(True, index=df.index)
@@ -130,7 +136,7 @@ def analyze_operations(df: pd.DataFrame, total_wards: int | None = None, municip
         ward_coverage = round(ward_count / total_wards * 100, 2)
         missing_wards = max(total_wards - ward_count, 0)
 
-    dates = _date_analysis(df, cols["created_on"])
+    dates = _date_analysis(df, cols["created_on"], reporting_date=reporting_date)
     status = _top_counts(df, cols["status"], 10)
     channel = _top_counts(df, cols["channel"], 15)
     case_type = _top_counts(df, cols["case_type"], 15)

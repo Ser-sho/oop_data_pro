@@ -21,3 +21,6 @@ For Ekurhuleni, enter **112** as total wards. Reporting date and data close time
 
 ## Step 9 — Final Report QA
 The app now runs final QA before report generation. Critical failures block PowerPoint generation; warnings produce REVIEW REQUIRED. The Excel addendum includes a Final Report QA sheet. Reporting date and data close time remain manual.
+
+## Template Mapper + VOC + date-aligned time analysis
+This build edits the existing template shapes in place. It does not add chart images over the sample chart areas. Sample bars are resized using their existing fills, fonts and positions. RAG status is applied as a real fill to the existing status shape. The selected reporting date controls daily Created On/hour analysis. An optional VOC workbook can be uploaded and its supported metrics are surfaced without inventing unsupported measures.
