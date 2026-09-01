@@ -1,26 +1,23 @@
-# OOP Corridor Daily Operations Report — V1 Step 3
+# OOP Corridor Daily Operations Report — V1 Step 8
 
-Fast-build foundation for an operational data-analysis and reporting system.
+Step 8 adds evidence traceability to the report/addendum workflow.
 
-## Current capabilities
-- Excel/CSV upload and sheet selection
-- Dataset profiling and mapped data dictionary
-- Data-quality checks
-- Configurable municipality/corridor and total ward count
-- Manual reporting date, period covered and data close time
-- Deterministic operational analysis
-- Management findings with IDs
-- Evidence register for findings/recommendations
-- Recommendation triggers
-- Lightweight evidence-reference QA
+## New
+- Evidence IDs linked to findings and recommendations.
+- Concrete evidence detail with values and calculation logic.
+- Traceability QA checks.
+- Excel addendum includes an Evidence Detail sheet.
+- Existing PowerPoint, template intelligence, audience and analysis features are retained.
 
-## Run on Windows
+Run with:
+
 ```powershell
-python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Design rule
-Calculations and evidence are deterministic. AI narrative, PowerPoint generation and the analytical addendum are separate layers to be added next.
+For Ekurhuleni, enter **112** as total wards. Reporting date and data close time remain manual.
+
+
+## Step 9 — Final Report QA
+The app now runs final QA before report generation. Critical failures block PowerPoint generation; warnings produce REVIEW REQUIRED. The Excel addendum includes a Final Report QA sheet. Reporting date and data close time remain manual.

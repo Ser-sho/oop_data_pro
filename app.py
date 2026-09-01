@@ -12,6 +12,11 @@ sys.path.insert(0, str(ROOT / "src"))
 from data_profiler import profile_dataframe
 from analysis_engine import analyze_operations
 from intelligence_engine import build_intelligence
+from ppt_generator import generate_powerpoint
+from addendum_generator import generate_addendum
+from template_intelligence import assess_template
+from audience_engine import build_audience_view
+from qa_engine import run_report_qa, qa_status
 
 st.set_page_config(page_title="OOP Corridor Daily Operations Report", layout="wide")
 st.title("OOP Corridor Daily Operations Report")
@@ -24,6 +29,8 @@ with st.sidebar:
     reporting_date = st.date_input("Reporting date", value=date.today())
     period_covered = st.text_input("Period covered", placeholder="e.g. Friday 21 Aug 2026")
     close_time = st.time_input("Data close time", value=time(17, 0))
+    audience = st.selectbox("Report audience", ["Executive management", "Operations management", "Analyst", "Custom"])
+    report_requirements = st.text_area("Reporting requirements (optional)", placeholder="e.g. Focus on ward coverage, service demand, unresolved cases and actions.")
     st.info("Reporting date and close time are manual. They are never inferred from the latest data timestamp.")
 
 uploaded = st.file_uploader("Upload the operations dataset", type=["xlsx", "xls", "csv"])
@@ -49,6 +56,7 @@ df = sheets[sheet_name]
 profile = profile_dataframe(df)
 analysis = analyze_operations(df, total_wards=int(total_wards) if total_wards else None, municipality=municipality)
 intelligence = build_intelligence(analysis, total_wards=int(total_wards) if total_wards else None)
+audience_view = build_audience_view(intelligence, audience, report_requirements)
 
 st.subheader("Report context")
 st.write({"municipality": municipality, "reporting_date": reporting_date.isoformat(), "period_covered": period_covered or "Not specified", "data_close_time": close_time.strftime("%H:%M")})
@@ -96,17 +104,20 @@ if analysis["dates"].get("available"):
 else:
     st.info("No usable Created On timestamps were found.")
 
-st.subheader("Management findings")
-if intelligence["findings"].empty:
+st.subheader(f"Management findings — {audience}")
+if audience_view["findings"].empty:
     st.info("No management findings were produced.")
 else:
-    st.dataframe(intelligence["findings"], use_container_width=True, hide_index=True)
+    st.dataframe(audience_view["findings"], use_container_width=True, hide_index=True)
 
-st.subheader("Recommendations")
-if intelligence["recommendations"].empty:
+st.subheader(f"Recommendations — {audience}")
+if audience_view["recommendations"].empty:
     st.info("No additional recommendations were triggered by the current rules.")
 else:
-    st.dataframe(intelligence["recommendations"], use_container_width=True, hide_index=True)
+    st.dataframe(audience_view["recommendations"], use_container_width=True, hide_index=True)
+
+st.subheader("Audience configuration")
+st.write({"audience": audience, "detail_level": audience_view["guidance"]["detail"], "tone": audience_view["guidance"]["tone"], "focus": audience_view["guidance"]["focus"], "max_findings": audience_view["guidance"]["max_findings"], "max_recommendations": audience_view["guidance"]["max_recommendations"]})
 
 st.subheader("Evidence register")
 st.dataframe(intelligence["evidence"], use_container_width=True, hide_index=True)
@@ -131,4 +142,81 @@ with st.expander("Data dictionary / mapped fields"):
 with st.expander("Full dataset sample"):
     st.dataframe(df.head(50), use_container_width=True, hide_index=True)
 
-st.caption("V1 analysis is deliberately transparent: calculations are deterministic; AI narrative, recommendations, PowerPoint generation and the analytical addendum are the next build stages.")
+st.divider()
+st.divider()
+st.subheader("Template intelligence")
+template_default = ROOT.parent / "Generic Corridor Operations Report Template V1.pptx"
+template_upload = st.file_uploader("Optional: upload/replace the PowerPoint template", type=["pptx"], key="ppt_template")
+if template_upload is not None:
+    template_path = ROOT / "_uploaded_template.pptx"
+    template_path.write_bytes(template_upload.getbuffer())
+elif template_default.exists():
+    template_path = template_default
+else:
+    template_path = None
+
+if template_path is not None:
+    template_assessment = assess_template(template_path, analysis, report_requirements)
+    st.metric("Template coverage", f"{template_assessment['score']:.1f}%")
+    st.dataframe(pd.DataFrame(template_assessment["sections"]), use_container_width=True, hide_index=True)
+    if report_requirements.strip():
+        st.subheader("Requirement coverage")
+        st.dataframe(pd.DataFrame(template_assessment["requirements"]), use_container_width=True, hide_index=True)
+    if template_assessment["recommendations"]:
+        st.subheader("Template recommendations")
+        for rec in template_assessment["recommendations"]:
+            st.warning(rec)
+
+
+st.subheader("Final Report QA")
+qa_template_assessment = locals().get("template_assessment", None)
+final_qa = run_report_qa(
+    analysis,
+    intelligence,
+    audience_view,
+    template_assessment=qa_template_assessment,
+    report_requirements=report_requirements,
+)
+status = qa_status(final_qa)
+if status == "READY FOR REVIEW":
+    st.success("🟢 READY FOR REVIEW — all blocking QA checks passed.")
+elif status == "REVIEW REQUIRED":
+    st.warning("🟠 REVIEW REQUIRED — warnings must be reviewed before circulation.")
+else:
+    st.error("🔴 REPORT BLOCKED — one or more critical QA checks failed.")
+st.dataframe(final_qa, use_container_width=True, hide_index=True)
+
+st.subheader("Generate PowerPoint report")
+if template_path is None:
+    st.info("Place the Generic Corridor Operations Report Template V1.pptx in the project folder or upload it above.")
+elif st.button("Generate OOP Corridor PowerPoint", type="primary"):
+    if status == "REPORT BLOCKED":
+        st.error("PowerPoint generation is blocked until critical QA failures are resolved.")
+    else:
+        out_dir = ROOT / "outputs"
+        out_dir.mkdir(exist_ok=True)
+        out_path = out_dir / f"OOP_Corridor_Daily_Operations_Report_{reporting_date.strftime('%Y%m%d')}.pptx"
+        try:
+            generate_powerpoint(template_path, out_path, analysis, intelligence, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"), audience_view=audience_view)
+            st.success("PowerPoint report generated successfully.")
+            st.download_button("Download PowerPoint report", data=out_path.read_bytes(), file_name=out_path.name, mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        except Exception as exc:
+            st.error(f"Could not generate the PowerPoint: {exc}")
+
+st.divider()
+st.subheader("Generate analytical addendum")
+st.write("The Excel addendum keeps detailed evidence, calculations, distributions and QA outside the PowerPoint so the management report stays concise.")
+if st.button("Generate Excel Analytical Addendum"):
+    out_dir = ROOT / "outputs"
+    out_dir.mkdir(exist_ok=True)
+    add_path = out_dir / f"OOP_Corridor_Daily_Operations_Addendum_{reporting_date.strftime('%Y%m%d')}.xlsx"
+    try:
+        intelligence_with_qa = dict(intelligence)
+        intelligence_with_qa["final_report_qa"] = final_qa
+        generate_addendum(add_path, uploaded.name, sheet_name, analysis, intelligence_with_qa, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"))
+        st.success("Excel analytical addendum generated successfully.")
+        st.download_button("Download Excel addendum", data=add_path.read_bytes(), file_name=add_path.name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception as exc:
+        st.error(f"Could not generate the addendum: {exc}")
+
+st.caption("V1 analysis is deliberately transparent: calculations are deterministic; PowerPoint generation is template-driven; the Excel addendum provides the supporting evidence layer.")
