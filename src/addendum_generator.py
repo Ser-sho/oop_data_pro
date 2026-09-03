@@ -79,6 +79,19 @@ def generate_addendum(output_path: str|Path, source_filename: str, sheet_name: s
         ["Records analysed",s["records"]],["Valid cases",s["valid_cases"]],["Configured total wards",s["total_wards"] if s["total_wards"] is not None else "Not configured"],
         ["Distinct wards represented",s["distinct_wards"]],["Represented ward coverage %",s["ward_coverage_pct"] if s["ward_coverage_pct"] is not None else "Not configured"],
         ["Missing/unrepresented wards",s["missing_wards"] if s["missing_wards"] is not None else "Not configured"],
+        ["Ward master listed allocations",s.get("ward_master_listed_allocations", "Not supplied")],
+        ["Ward master unique ward numbers",s.get("ward_master_unique_wards", "Not supplied")],
+        ["Ward master duplicate allocation rows",s.get("ward_master_duplicate_wards", "Not supplied")],
+        ["Observed unique wards outside master",s.get("ward_master_outside_unique_wards", "Not supplied")],
+        ["Daily cases",analysis.get("dates",{}).get("selected_day",{}).get("cases", "Not supplied")],
+        ["Daily wards",analysis.get("dates",{}).get("selected_day",{}).get("daily_wards", "Not supplied")],
+        ["New wards today",analysis.get("dates",{}).get("selected_day",{}).get("new_wards", "Not supplied")],
+        ["Running wards",analysis.get("dates",{}).get("selected_day",{}).get("running_wards", "Not supplied")],
+        ["Still needed",analysis.get("dates",{}).get("selected_day",{}).get("still_needed", "Not supplied")],
+        ["Suggested new wards per remaining working day",analysis.get("dates",{}).get("selected_day",{}).get("suggested_new_wards_per_remaining_day", "Not supplied")],
+        ["Remaining working days in week",analysis.get("dates",{}).get("selected_day",{}).get("remaining_workdays_in_week", "Not supplied")],
+        ["Ward history status",analysis.get("dates",{}).get("selected_day",{}).get("ward_history_status", "Not supplied")],
+        ["Retained ward history days",s.get("retained_ward_history_days", 0)],
         ["VOC responses",voc_analysis.get("responses") if voc_analysis else "Not supplied"],
     ],columns=["Item","Value"])
     dictionary=pd.DataFrame([{"field_role":k,"source_column":v,"usable":bool(v)} for k,v in analysis["columns"].items()])
@@ -88,15 +101,33 @@ def generate_addendum(output_path: str|Path, source_filename: str, sheet_name: s
         {"metric":"Invalid case records","value":s["invalid_case_records"],"calculation":"Records analysed - valid cases"},
         {"metric":"Distinct wards represented","value":s["distinct_wards"],"calculation":"Unique non-empty Ward Id values"},
         {"metric":"Ward coverage %","value":s["ward_coverage_pct"],"calculation":"Distinct wards / configured total wards × 100"},
-        {"metric":"Missing/unrepresented wards","value":s["missing_wards"],"calculation":"Configured total wards - distinct wards represented"},
+        {"metric":"Missing/unrepresented wards","value":s["missing_wards"],"calculation":"Configured allocation benchmark - cumulative distinct wards reached through selected reporting date"},
+        {"metric":"Daily cases","value":analysis.get("dates",{}).get("selected_day",{}).get("cases"),"calculation":"Valid case rows created on the manually selected reporting date"},
+        {"metric":"Daily wards","value":analysis.get("dates",{}).get("selected_day",{}).get("daily_wards"),"calculation":"Distinct normalized wards with valid cases on the selected reporting date"},
+        {"metric":"New wards","value":analysis.get("dates",{}).get("selected_day",{}).get("new_wards"),"calculation":"Selected-day wards not previously observed in retained reporting-week ward history"},
+        {"metric":"Running wards","value":analysis.get("dates",{}).get("selected_day",{}).get("running_wards"),"calculation":"Distinct normalized wards observed cumulatively from the Monday of the reporting week through the selected reporting date"},
+        {"metric":"Still needed","value":analysis.get("dates",{}).get("selected_day",{}).get("still_needed"),"calculation":"Configured ward allocation benchmark - cumulative running wards"},
+        {"metric":"Suggested new wards per remaining working day","value":analysis.get("dates",{}).get("selected_day",{}).get("suggested_new_wards_per_remaining_day"),"calculation":"Ceiling of still needed divided by remaining Monday-Friday working days in the reporting week"},
+        {"metric":"Observed unique wards outside master","value":s.get("ward_master_outside_unique_wards"),"calculation":"Distinct normalized case wards that do not match the supplied ward master"},
     ])
     with pd.ExcelWriter(output_path,engine="openpyxl") as writer:
         context.to_excel(writer,sheet_name="Report Context",index=False); calculations.to_excel(writer,sheet_name="Calculations",index=False); dictionary.to_excel(writer,sheet_name="Data Dictionary",index=False)
         _write_df(writer,analysis.get("quality"),"Data Quality")
         for key,sheet in [("status","Status"),("channel","Channel"),("case_type","Case Type"),("priority","Priority"),("city","City Area"),("category1","Demand Cat 1"),("category2","Demand Cat 2"),("category3","Demand Cat 3"),("owner","Owner")]: _write_df(writer,analysis.get(key),sheet)
         dates=analysis.get("dates",{}); _write_df(writer,dates.get("by_date") if dates.get("available") else None,"Cases by Date"); _write_df(writer,dates.get("by_hour") if dates.get("available") else None,"Cases by Hour")
+        _write_df(writer,dates.get("daily_tracker") if dates.get("available") else None,"Daily Tracker")
+        _write_df(writer,analysis.get("ward_mapping"),"Ward Mapping QA")
+        _write_df(writer,dates.get("ward_coverage") if dates.get("available") else None,"Ward Coverage Detail")
+        _write_df(writer,dates.get("missing_wards") if dates.get("available") else None,"Missing Wards")
+        _write_df(writer,analysis.get("corridor_coverage"),"Corridor Coverage")
+        _write_df(writer,analysis.get("cca_coverage"),"CCA Coverage")
+        _write_df(writer,analysis.get("cca_daily_tracker"),"CCA Daily Tracker")
+        _write_df(writer,analysis.get("channel_new_wards"),"Channel New Wards")
+        if analysis.get("ward_master",{}).get("available"):
+            _write_df(writer,analysis["ward_master"].get("duplicate_wards"),"Ward Master Exceptions")
         _write_df(writer,intelligence.get("findings"),"Findings"); _write_df(writer,intelligence.get("recommendations"),"Recommendations"); _write_df(writer,intelligence.get("evidence"),"Evidence Register"); _write_df(writer,intelligence.get("evidence_details"),"Evidence Detail"); _write_df(writer,intelligence.get("qa"),"Traceability QA"); _write_df(writer,intelligence.get("final_report_qa"),"Final Report QA")
-        ward_note=pd.DataFrame({"Item":["Ward representation"],"Configured total wards":[s["total_wards"]],"Distinct wards represented":[s["distinct_wards"]],"Coverage %":[s["ward_coverage_pct"]],"Missing/unrepresented":[s["missing_wards"]]}); ward_note.to_excel(writer,sheet_name="Ward Coverage",index=False)
+        sd=analysis.get("dates",{}).get("selected_day",{})
+        ward_note=pd.DataFrame({"Item":["Ward representation through selected reporting week"],"Configured allocation benchmark":[s["total_wards"]],"Cumulative wards reached":[sd.get("running_wards",s["distinct_wards"])],"Coverage %":[sd.get("coverage_pct",s["ward_coverage_pct"])],"Still needed":[sd.get("still_needed",s["missing_wards"])],"Master unique ward numbers":[s.get("ward_master_unique_wards")]}); ward_note.to_excel(writer,sheet_name="Ward Coverage",index=False)
         if voc_analysis: _write_df(writer,pd.DataFrame([voc_analysis]),"VOC Summary")
         _add_chart_sheet(writer,analysis)
         _style_book(writer.book)

@@ -69,7 +69,7 @@ def build_intelligence(analysis: dict[str, Any], total_wards: int | None = None)
             f"Use {top['value']} as the first demand segment for capacity and resolution review; compare its outcome mix with other major categories.")
 
     dates = analysis.get("dates", {})
-    if dates.get("available"):
+    if dates.get("available") and dates.get("day_min_time") is not None and dates.get("day_max_time") is not None and dates.get("peak_hour") is not None:
         start, end = dates["day_min_time"], dates["day_max_time"]
         span_hours = (end - start).total_seconds() / 3600
         add("F-006", "Normal", "Time pattern",
@@ -115,11 +115,13 @@ def build_intelligence(analysis: dict[str, Any], total_wards: int | None = None)
         d("E-005","F-005","Leading category",cat1.iloc[0]["value"],"Highest case-count Case Category 1")
         d("E-005","F-005","Leading category cases",int(cat1.iloc[0]["cases"]),"Frequency count")
         d("E-005","F-005","Leading category share %",float(cat1.iloc[0]["share_pct"]),"Cases / total records × 100")
-    if dates.get("available"):
+    if dates.get("available") and dates.get("day_min_time") is not None and dates.get("day_max_time") is not None:
         d("E-006","F-006","Observed start",dates["day_min_time"].strftime("%H:%M:%S"),"Minimum Created On timestamp on reporting date")
         d("E-006","F-006","Observed end",dates["day_max_time"].strftime("%H:%M:%S"),"Maximum Created On timestamp on reporting date")
-        d("E-006","F-006","Peak hour",f"{dates['peak_hour']:02d}:00","Hour with maximum case count")
-        d("E-006","F-006","Peak-hour cases",dates["peak_hour_cases"],"Maximum hourly frequency")
+        d("E-006","F-006","Peak hour",f"{dates['peak_hour']:02d}:00" if dates.get("peak_hour") is not None else "Not available","Hour with maximum case count")
+        d("E-006","F-006","Peak-hour cases",dates.get("peak_hour_cases",0),"Maximum hourly frequency")
+    else:
+        d("E-006","F-006","Observed time window","Not supplied","No valid Created On records on the selected reporting date")
     d("E-007","F-007","Quality findings",len(quality),"Count of deterministic quality findings")
     d("E-007","F-007","High severity findings",int((quality["severity"]=="High").sum()) if not quality.empty and "severity" in quality else 0,"Count where severity=High")
     ddf=pd.DataFrame(details)

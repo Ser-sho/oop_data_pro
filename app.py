@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, timedelta
 from pathlib import Path
 import sys
 
@@ -10,7 +10,7 @@ import streamlit as st
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 from data_profiler import profile_dataframe
-from analysis_engine import analyze_operations
+from analysis_engine import analyze_operations, parse_ward_master_excel
 from intelligence_engine import build_intelligence
 from ppt_generator import generate_powerpoint
 from addendum_generator import generate_addendum
@@ -32,7 +32,12 @@ with st.sidebar:
     close_time = st.time_input("Data close time", value=time(17, 0))
     audience = st.selectbox("Report audience", ["Executive management", "Operations management", "Analyst", "Custom"])
     report_requirements = st.text_area("Reporting requirements (optional)", placeholder="e.g. Focus on ward coverage, service demand, unresolved cases and actions.")
+    ward_master_uploaded = st.file_uploader("Ward master / CCA allocation (optional)", type=["xlsx", "xls"], key="ward_master")
     st.info("Reporting date and close time are manual. They are never inferred from the latest data timestamp.")
+    st.caption("Ward history is kept separately by municipality/corridor and reporting week. Reporting date controls the week; upload date does not.")
+    if st.button("Clear retained ward history"):
+        st.session_state["ward_history_by_scope"] = {}
+        st.rerun()
 
 uploaded = st.file_uploader("Upload the operations dataset", type=["xlsx", "xls", "csv"])
 voc_uploaded = st.file_uploader("Upload VOC dataset (optional)", type=["xlsx", "xls", "csv"], key="voc_dataset")
@@ -56,7 +61,83 @@ sheet_name = st.selectbox("Sheet to analyse", list(sheets.keys()), index=0)
 df = sheets[sheet_name]
 
 profile = profile_dataframe(df)
-analysis = analyze_operations(df, total_wards=int(total_wards) if total_wards else None, municipality=municipality, reporting_date=reporting_date)
+ward_master = {"available": False}
+ward_master_name = "Not supplied"
+ward_master_source = ward_master_uploaded
+if ward_master_source is None:
+    default_master = ROOT / "EMM CCC & Wards.xlsx"
+    if default_master.exists() and municipality.strip().lower() == "ekurhuleni":
+        ward_master_source = default_master
+if ward_master_source is not None:
+    try:
+        ward_master = parse_ward_master_excel(ward_master_source)
+        ward_master_name = getattr(ward_master_source, "name", Path(str(ward_master_source)).name)
+        if ward_master.get("available"):
+            total_wards = ward_master["listed_allocations"]
+            st.sidebar.success(f"Ward master loaded: {total_wards} listed allocations / {ward_master['unique_wards']} unique ward numbers")
+            if ward_master.get("unique_wards") != ward_master.get("listed_allocations"):
+                st.sidebar.warning("Ward master contains duplicate ward allocations. These are preserved and flagged; they are not silently removed.")
+    except Exception as exc:
+        st.sidebar.error(f"Could not read ward master: {exc}")
+# Retain only compact ward/date evidence across separate uploads in this session.
+# History is scoped by BOTH municipality/corridor and reporting week.
+# Raw case data is never copied into the history store.
+if "ward_history_by_scope" not in st.session_state:
+    st.session_state["ward_history_by_scope"] = {}
+if "ward_history_by_municipality" in st.session_state:
+    # Upgrade older V2.5 session state without mixing its records across weeks.
+    legacy = st.session_state.pop("ward_history_by_municipality")
+    st.session_state["ward_history_by_scope"].update({str(k): v for k, v in legacy.items()})
+
+reporting_target = pd.Timestamp(reporting_date).normalize()
+week_start = reporting_target - pd.Timedelta(days=reporting_target.weekday())
+history_key = f"{municipality.strip().lower() or 'default'}|week:{week_start.date()}"
+ward_history = st.session_state["ward_history_by_scope"].get(
+    history_key, pd.DataFrame(columns=["date","ward","corridor","cca","daily_cases"])
+)
+analysis = analyze_operations(
+    df,
+    total_wards=int(total_wards) if total_wards else None,
+    municipality=municipality,
+    reporting_date=reporting_date,
+    ward_master=ward_master,
+    ward_history=ward_history,
+)
+
+# Add the current upload's mapped ward/date evidence to retained session history.
+# Case-level duplicates do not matter because history is deduplicated to date/ward/CCA.
+if ward_master.get("available") and analysis.get("ward_mapping") is not None:
+    created_col = analysis["columns"].get("created_on")
+    if created_col and created_col in df.columns:
+        current_dates = pd.to_datetime(df[created_col], errors="coerce").dt.normalize()
+        # Only retain evidence that belongs to the selected reporting week and is
+        # not later than the manually selected reporting date. This prevents a
+        # Friday upload from contaminating a Monday report, for example.
+        in_scope = current_dates.notna() & (current_dates >= week_start) & (current_dates <= reporting_target)
+        daily_case_counts = current_dates[in_scope].value_counts(dropna=True).to_dict()
+        current_hist = pd.DataFrame({
+            "date": current_dates,
+            "daily_cases": current_dates.map(daily_case_counts),
+            "ward": analysis["ward_mapping"]["ward"],
+            "corridor": analysis["ward_mapping"]["corridor"],
+            "cca": analysis["ward_mapping"]["cca"],
+        })
+        current_hist = current_hist.loc[in_scope].dropna(subset=["date","ward","corridor","cca"])
+        current_hist = current_hist.drop_duplicates(subset=["date","ward","corridor","cca"])
+        if not current_hist.empty:
+            # A later upload for the same reporting date is treated as a correction
+            # or replacement for that date, rather than being unioned with stale wards.
+            existing = ward_history.copy()
+            if "daily_cases" not in existing.columns:
+                existing["daily_cases"] = pd.NA
+            replace_dates = set(pd.to_datetime(current_hist["date"]).dt.normalize())
+            if not existing.empty:
+                existing["date"] = pd.to_datetime(existing["date"], errors="coerce").dt.normalize()
+                existing = existing[~existing["date"].isin(replace_dates)]
+            combined_hist = pd.concat([existing, current_hist], ignore_index=True)
+            combined_hist["date"] = pd.to_datetime(combined_hist["date"], errors="coerce").dt.normalize()
+            combined_hist = combined_hist.dropna(subset=["date","ward","corridor","cca"]).drop_duplicates(subset=["date","ward","corridor","cca"]).sort_values(["date","corridor","cca","ward"]).reset_index(drop=True)
+            st.session_state["ward_history_by_scope"][history_key] = combined_hist
 
 voc_df = None
 if voc_uploaded is not None:
@@ -74,7 +155,7 @@ intelligence = build_intelligence(analysis, total_wards=int(total_wards) if tota
 audience_view = build_audience_view(intelligence, audience, report_requirements)
 
 st.subheader("Report context")
-st.write({"municipality": municipality, "reporting_date": reporting_date.isoformat(), "period_covered": period_covered or "Not specified", "data_close_time": close_time.strftime("%H:%M")})
+st.write({"municipality": municipality, "reporting_date": reporting_date.isoformat(), "reporting_week_start": week_start.date().isoformat(), "period_covered": period_covered or "Not specified", "data_close_time": close_time.strftime("%H:%M")})
 
 st.subheader("Operational overview")
 metrics = [
@@ -119,6 +200,32 @@ if analysis["dates"].get("available"):
 else:
     st.info("No usable Created On timestamps were found.")
 
+if analysis["dates"].get("available"):
+    st.subheader("Daily vs cumulative ward coverage")
+    sd = analysis["dates"].get("selected_day", {})
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Cases today", f"{int(sd.get('cases', 0)):,}")
+    m2.metric("Daily wards", f"{int(sd.get('daily_wards', 0)):,}")
+    m3.metric("New wards", f"{int(sd.get('new_wards', 0)):,}")
+    m4.metric("Running wards", f"{int(sd.get('running_wards', 0)):,}")
+    m5.metric("Still needed", f"{int(sd.get('still_needed', 0)):,}" if sd.get('still_needed') is not None else "Not configured")
+    if sd.get("ward_history_status"):
+        if str(sd["ward_history_status"]).startswith("Baseline"):
+            st.info(f"Ward history status: {sd['ward_history_status']}. New wards on this first supplied day are a baseline, not a claim about days outside the supplied history.")
+        else:
+            st.success(f"Ward history status: {sd['ward_history_status']}.")
+    pace = sd.get("suggested_new_wards_per_remaining_day")
+    rem_days = sd.get("remaining_workdays_in_week")
+    if pace is not None and rem_days is not None and rem_days > 0:
+        st.caption(f"Target pace: {pace} new wards per remaining working day to reach {analysis['summary'].get('total_wards') or 0} wards by Friday ({rem_days} working day(s) remaining).")
+    tracker = analysis["dates"].get("daily_tracker")
+    if isinstance(tracker, pd.DataFrame) and not tracker.empty:
+        st.dataframe(tracker, use_container_width=True, hide_index=True)
+    if analysis.get("ward_master", {}).get("available"):
+        st.caption(f"Ward master: {ward_master_name}. Coverage benchmark is the supplied allocation register, not the number of wards observed in the raw data.")
+        if analysis["summary"].get("ward_master_duplicate_wards", 0) or analysis["summary"].get("ward_master_outside_unique_wards", 0):
+            st.warning(f"Ward-master validation: {analysis['summary'].get('ward_master_duplicate_wards',0)} duplicate allocation rows and {analysis['summary'].get('ward_master_outside_unique_wards',0)} observed unique ward number(s) outside the supplied master. These are flagged, not silently corrected.")
+
 st.subheader(f"Management findings — {audience}")
 if audience_view["findings"].empty:
     st.info("No management findings were produced.")
@@ -160,7 +267,7 @@ with st.expander("Full dataset sample"):
 st.divider()
 st.divider()
 st.subheader("Template intelligence")
-template_default = ROOT.parent / "Generic Corridor Operations Report Template V1.pptx"
+template_default = ROOT / "Generic Corridor Operations Report Template V1.pptx"
 template_upload = st.file_uploader("Optional: upload/replace the PowerPoint template", type=["pptx"], key="ppt_template")
 if template_upload is not None:
     template_path = ROOT / "_uploaded_template.pptx"
@@ -210,7 +317,12 @@ elif st.button("Generate OOP Corridor PowerPoint", type="primary"):
     else:
         out_dir = ROOT / "outputs"
         out_dir.mkdir(exist_ok=True)
-        out_path = out_dir / f"OOP_Corridor_Daily_Operations_Report_{reporting_date.strftime('%Y%m%d')}.pptx"
+        base = out_dir / f"OOP_Corridor_Daily_Operations_Report_{reporting_date.strftime('%Y%m%d')}"
+        out_path = base.with_suffix('.pptx')
+        n = 2
+        while out_path.exists():
+            out_path = out_dir / f"{base.name}_v{n}.pptx"
+            n += 1
         try:
             generate_powerpoint(template_path, out_path, analysis, intelligence, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"), audience_view=audience_view, voc_analysis=voc_analysis)
             st.success("PowerPoint report generated successfully.")
@@ -224,7 +336,12 @@ st.write("The Excel addendum keeps detailed evidence, calculations, distribution
 if st.button("Generate Excel Analytical Addendum"):
     out_dir = ROOT / "outputs"
     out_dir.mkdir(exist_ok=True)
-    add_path = out_dir / f"OOP_Corridor_Daily_Operations_Addendum_{reporting_date.strftime('%Y%m%d')}.xlsx"
+    base = out_dir / f"OOP_Corridor_Daily_Operations_Addendum_{reporting_date.strftime('%Y%m%d')}"
+    add_path = base.with_suffix('.xlsx')
+    n = 2
+    while add_path.exists():
+        add_path = out_dir / f"{base.name}_v{n}.xlsx"
+        n += 1
     try:
         intelligence_with_qa = dict(intelligence)
         intelligence_with_qa["final_report_qa"] = final_qa
