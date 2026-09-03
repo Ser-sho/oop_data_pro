@@ -217,6 +217,34 @@ def _add_hourly_chart(slide, left, top, width, height, hours, values):
     labels = [f'{int(h):02d}:00' for h in hours]
     return _add_bar_chart(slide, left, top, width, height, labels, values, title='', x_title='Hour of day', y_title='Cases', horizontal=False, color='0058A8')
 
+
+
+def _add_line_chart(slide, left, top, width, height, hours, values):
+    """Insert a genuine PowerPoint line chart for cases logged by hour."""
+    data = ChartData()
+    labels = [f'{int(h):02d}:00' for h in hours]
+    data.categories = labels
+    data.add_series('Cases', [float(v or 0) for v in values])
+    chart = slide.shapes.add_chart(
+        XL_CHART_TYPE.LINE_MARKERS,
+        Inches(left), Inches(top), Inches(width), Inches(height), data
+    ).chart
+    _style_chart(chart, title='', x_title='Hour of day', y_title='Cases', legend=False, horizontal=False)
+    _set_series_color(chart.series[0], '0058A8')
+    try:
+        chart.series[0].marker.style = 2
+        chart.series[0].marker.size = 6
+    except Exception:
+        pass
+    try:
+        chart.value_axis.minimum_scale = 0
+        mx = max([float(v or 0) for v in values] + [1])
+        chart.value_axis.maximum_scale = max(mx * 1.20, 1)
+        chart.value_axis.major_unit = max(1, round(chart.value_axis.maximum_scale / 5))
+    except Exception:
+        pass
+    return chart
+
 def _set_by_index(slide, indices, values):
     for i, v in zip(indices, values):
         if i < len(slide.shapes):
@@ -350,13 +378,11 @@ def generate_powerpoint(template_path, output_path, analysis, intelligence, muni
     else:
         attention="The 112-ward target has been reached cumulatively through the selected reporting date."
     _set_text(s.shapes[17],attention)
-    _set_text(s.shapes[19],'Cases on reporting date')
+    _set_text(s.shapes[19],'Cases logged per hour')
     day=d.get('by_date',pd.DataFrame()) if d.get('available') else pd.DataFrame()
     day=day.reset_index(drop=True) if isinstance(day,pd.DataFrame) else pd.DataFrame()
-    # Slide 2 movement logic is intentionally not invented yet. For a single selected date, show only the certified daily case count.
     tracker=d.get('daily_tracker',pd.DataFrame()) if d.get('available') else pd.DataFrame()
     tracker=tracker.tail(4).reset_index(drop=True) if isinstance(tracker,pd.DataFrame) else pd.DataFrame()
-    chart_day = tracker if not tracker.empty else pd.DataFrame({'date':[reporting_date], 'cases':[0]})
     for i,row in enumerate([42,47,52,57]):
         if i<len(tracker):
             rr=tracker.iloc[i]
@@ -366,7 +392,15 @@ def generate_powerpoint(template_path, output_path, analysis, intelligence, muni
             for j in range(5): _set_text(s.shapes[row+j],'—')
     _set_text(s.shapes[63],f"Validate ward representation ({missing} missing).\nProtect observed peak intake periods.\nUse the addendum for detailed evidence.")
     _remove_shapes([s.shapes[i] for i in [20,21,22,23,24] if i < len(s.shapes)])
-    _add_bar_chart(s,0.75,3.88,3.75,1.55,[str(x) for x in chart_day['date']], [float(x) for x in chart_day['cases']], x_title='Reporting date', y_title='Cases', horizontal=False, color='0058A8')
+    hourly=d.get('by_hour',pd.DataFrame()) if d.get('available') else pd.DataFrame()
+    hourly=hourly.reset_index(drop=True) if isinstance(hourly,pd.DataFrame) else pd.DataFrame()
+    if hourly.empty:
+        hours=[0]
+        hourly_values=[0]
+    else:
+        hours=hourly['hour'].tolist()
+        hourly_values=hourly['cases'].tolist()
+    _add_line_chart(s,0.75,3.88,3.75,1.55,hours,hourly_values)
 
     # Slide 3
     s=prs.slides[2]

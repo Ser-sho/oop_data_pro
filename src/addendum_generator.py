@@ -70,6 +70,12 @@ def _add_chart_sheet(writer, analysis):
     ws.column_dimensions["A"].width=28; ws.column_dimensions["B"].width=16
 
 
+def _status_value(df: pd.DataFrame | None, label: str):
+    if df is None or df.empty or "status_group" not in df.columns:
+        return "Not supplied"
+    rows=df[df["status_group"]==label]
+    return int(rows.iloc[0]["cases"]) if not rows.empty else 0
+
 def generate_addendum(output_path: str|Path, source_filename: str, sheet_name: str, analysis: dict[str,Any], intelligence: dict[str,Any], municipality: str, reporting_date, period_covered: str, close_time: str, voc_analysis=None) -> Path:
     output_path=Path(output_path); output_path.parent.mkdir(parents=True,exist_ok=True)
     s=analysis["summary"]
@@ -91,6 +97,10 @@ def generate_addendum(output_path: str|Path, source_filename: str, sheet_name: s
         ["Suggested new wards per remaining working day",analysis.get("dates",{}).get("selected_day",{}).get("suggested_new_wards_per_remaining_day", "Not supplied")],
         ["Remaining working days in week",analysis.get("dates",{}).get("selected_day",{}).get("remaining_workdays_in_week", "Not supplied")],
         ["Ward history status",analysis.get("dates",{}).get("selected_day",{}).get("ward_history_status", "Not supplied")],
+        ["Active cases (open)", _status_value(analysis.get("status_summary"), "Active")],
+        ["Resolved cases (closed)", _status_value(analysis.get("status_summary"), "Resolved")],
+        ["Cancelled cases", _status_value(analysis.get("status_summary"), "Cancelled")],
+        ["Other / unknown status cases", _status_value(analysis.get("status_summary"), "Other / Unknown")],
         ["Retained ward history days",s.get("retained_ward_history_days", 0)],
         ["VOC responses",voc_analysis.get("responses") if voc_analysis else "Not supplied"],
     ],columns=["Item","Value"])
@@ -99,6 +109,10 @@ def generate_addendum(output_path: str|Path, source_filename: str, sheet_name: s
         {"metric":"Records analysed","value":s["records"],"calculation":"Number of rows in selected sheet"},
         {"metric":"Valid cases","value":s["valid_cases"],"calculation":"Rows with a non-empty mapped Case Number"},
         {"metric":"Invalid case records","value":s["invalid_case_records"],"calculation":"Records analysed - valid cases"},
+        {"metric":"Active cases (open)","value":_status_value(analysis.get("status_summary"), "Active"),"calculation":"Valid cases where source Status = Active"},
+        {"metric":"Resolved cases (closed)","value":_status_value(analysis.get("status_summary"), "Resolved"),"calculation":"Valid cases where source Status = Resolved"},
+        {"metric":"Cancelled cases","value":_status_value(analysis.get("status_summary"), "Cancelled"),"calculation":"Valid cases where source Status = Cancelled or Canceled"},
+        {"metric":"Other / unknown status cases","value":_status_value(analysis.get("status_summary"), "Other / Unknown"),"calculation":"Valid cases whose source Status is not mapped to Active, Resolved or Cancelled"},
         {"metric":"Distinct wards represented","value":s["distinct_wards"],"calculation":"Unique non-empty Ward Id values"},
         {"metric":"Ward coverage %","value":s["ward_coverage_pct"],"calculation":"Distinct wards / configured total wards × 100"},
         {"metric":"Missing/unrepresented wards","value":s["missing_wards"],"calculation":"Configured allocation benchmark - cumulative distinct wards reached through selected reporting date"},
@@ -113,6 +127,7 @@ def generate_addendum(output_path: str|Path, source_filename: str, sheet_name: s
     with pd.ExcelWriter(output_path,engine="openpyxl") as writer:
         context.to_excel(writer,sheet_name="Report Context",index=False); calculations.to_excel(writer,sheet_name="Calculations",index=False); dictionary.to_excel(writer,sheet_name="Data Dictionary",index=False)
         _write_df(writer,analysis.get("quality"),"Data Quality")
+        _write_df(writer,analysis.get("status_summary"),"Case Status Summary")
         for key,sheet in [("status","Status"),("channel","Channel"),("case_type","Case Type"),("priority","Priority"),("city","City Area"),("category1","Demand Cat 1"),("category2","Demand Cat 2"),("category3","Demand Cat 3"),("owner","Owner")]: _write_df(writer,analysis.get(key),sheet)
         dates=analysis.get("dates",{}); _write_df(writer,dates.get("by_date") if dates.get("available") else None,"Cases by Date"); _write_df(writer,dates.get("by_hour") if dates.get("available") else None,"Cases by Hour")
         _write_df(writer,dates.get("daily_tracker") if dates.get("available") else None,"Daily Tracker")

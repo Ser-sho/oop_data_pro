@@ -18,17 +18,26 @@ from template_intelligence import assess_template
 from audience_engine import build_audience_view
 from qa_engine import run_report_qa, qa_status
 from voc_engine import analyze_voc
+from report_period import PERIOD_TYPES, resolve_reporting_period, summarize_period
+from report_planner import build_report_plan, plan_dataframe
 
 st.set_page_config(page_title="OOP Corridor Daily Operations Report", layout="wide")
-st.title("OOP Corridor Daily Operations Report")
-st.caption("V1 — Data foundation + corridor operations analysis")
+st.title("Dynamic Operations & Analytics Reporting System")
+st.caption("V3.1 — Data foundation + reporting-period framework + dynamic report planner")
 
 with st.sidebar:
     st.header("Report controls")
-    municipality = st.text_input("Municipality / corridor", value="Ekurhuleni")
+    department = st.text_input("Department / entity", value="Ekurhuleni", help="The department or entity being reported on, e.g. SASSA, Home Affairs, Health or Education.")
+    requesting_team = st.text_input("Requesting internal team", value="Operations Team", help="The internal team requesting the report, e.g. Operations Team, Entity Team or Management.")
+    municipality = st.text_input("Municipality / corridor / reporting scope", value="Ekurhuleni")
     total_wards = st.number_input("Total wards (optional)", min_value=0, value=0, step=1, help="Enter the official total for the municipality. This is never inferred from the dataset.")
-    reporting_date = st.date_input("Reporting date", value=date.today())
-    period_covered = st.text_input("Period covered", placeholder="e.g. Friday 21 Aug 2026")
+    reporting_date = st.date_input("Anchor / reporting date", value=date.today())
+    period_type = st.selectbox("Reporting period", PERIOD_TYPES, index=0, help="The period is explicitly selected. It is never inferred from the latest uploaded timestamp.")
+    custom_start = custom_end = None
+    if period_type == "Custom":
+        custom_start = st.date_input("Custom period start", value=reporting_date)
+        custom_end = st.date_input("Custom period end", value=reporting_date)
+    period_covered = st.text_input("Period covered (optional display text)", placeholder="e.g. Q3 2026 or Friday 21 Aug 2026")
     close_time = st.time_input("Data close time", value=time(17, 0))
     audience = st.selectbox("Report audience", ["Executive management", "Operations management", "Analyst", "Custom"])
     report_requirements = st.text_area("Reporting requirements (optional)", placeholder="e.g. Focus on ward coverage, service demand, unresolved cases and actions.")
@@ -90,6 +99,11 @@ if "ward_history_by_municipality" in st.session_state:
     st.session_state["ward_history_by_scope"].update({str(k): v for k, v in legacy.items()})
 
 reporting_target = pd.Timestamp(reporting_date).normalize()
+try:
+    reporting_period = resolve_reporting_period(period_type, reporting_date, custom_start, custom_end)
+except ValueError as exc:
+    st.error(str(exc))
+    st.stop()
 week_start = reporting_target - pd.Timedelta(days=reporting_target.weekday())
 history_key = f"{municipality.strip().lower() or 'default'}|week:{week_start.date()}"
 ward_history = st.session_state["ward_history_by_scope"].get(
@@ -102,6 +116,13 @@ analysis = analyze_operations(
     reporting_date=reporting_date,
     ward_master=ward_master,
     ward_history=ward_history,
+)
+
+period_summary = summarize_period(
+    df,
+    analysis.get("columns", {}).get("created_on"),
+    reporting_period,
+    valid_mask=(pd.Series(True, index=df.index) if not analysis.get("columns", {}).get("case_id") else df[analysis["columns"]["case_id"]].notna()),
 )
 
 # Add the current upload's mapped ward/date evidence to retained session history.
@@ -153,9 +174,54 @@ if voc_uploaded is not None:
 voc_analysis = analyze_voc(voc_df)
 intelligence = build_intelligence(analysis, total_wards=int(total_wards) if total_wards else None)
 audience_view = build_audience_view(intelligence, audience, report_requirements)
+report_plan = build_report_plan(analysis, department, requesting_team, reporting_period, report_requirements, audience, voc_analysis)
+
+st.subheader("Dynamic report planner")
+st.write({"department": department, "requesting_team": requesting_team, "reporting_period": reporting_period.label, "audience": audience})
+st.caption("The planner determines what the report should contain from the department, requesting team, selected period, available data and user focus. It does not require a supplied PowerPoint template.")
+plan_status = "READY TO DESIGN" if not report_plan["gaps"] else "READY WITH FOCUS GAPS"
+if plan_status == "READY TO DESIGN":
+    st.success("🟢 Report plan is ready for the automatic report designer.")
+else:
+    st.warning("🟠 The report can be planned, but one or more requested focus areas are not supported by the supplied data.")
+st.dataframe(plan_dataframe(report_plan), use_container_width=True, hide_index=True)
+if report_plan["gaps"]:
+    st.subheader("Planner focus gaps")
+    st.dataframe(pd.DataFrame(report_plan["gaps"]), use_container_width=True, hide_index=True)
+with st.expander("Report design rules"):
+    st.write(report_plan["design_requirements"])
+    st.write({"main_report": report_plan["main_report_rule"], "addendum": report_plan["addendum_rule"]})
 
 st.subheader("Report context")
-st.write({"municipality": municipality, "reporting_date": reporting_date.isoformat(), "reporting_week_start": week_start.date().isoformat(), "period_covered": period_covered or "Not specified", "data_close_time": close_time.strftime("%H:%M")})
+st.write({
+    "municipality": municipality,
+    "period_type": reporting_period.period_type,
+    "period": reporting_period.label,
+    "period_start": reporting_period.start_date.isoformat(),
+    "period_end": reporting_period.end_date.isoformat(),
+    "comparison_period_start": reporting_period.comparison_start.isoformat() if reporting_period.comparison_start else None,
+    "comparison_period_end": reporting_period.comparison_end.isoformat() if reporting_period.comparison_end else None,
+    "anchor_date": reporting_period.anchor_date.isoformat(),
+    "period_covered_display": period_covered or "Not specified",
+    "data_close_time": close_time.strftime("%H:%M"),
+})
+
+st.subheader("Reporting-period intelligence")
+if period_summary.get("available"):
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Period", reporting_period.label)
+    p2.metric("Period cases", f"{period_summary['current_records']:,}")
+    p3.metric("Comparison cases", f"{period_summary['comparison_records']:,}")
+    if period_summary['comparison_records']:
+        change = (period_summary['current_records'] - period_summary['comparison_records']) / period_summary['comparison_records'] * 100
+        p4.metric("Cases vs comparison", f"{change:+.1f}%")
+    else:
+        p4.metric("Cases vs comparison", "No baseline")
+    if reporting_period.period_type != "Daily":
+        st.info("The reporting-period framework is active. The current Operations analysis engine remains daily/template-specific; multi-period report planning is the next integration layer. No daily metric is being mislabeled as a quarterly/monthly result.")
+else:
+    st.warning(period_summary.get("reason", "Reporting period could not be evaluated."))
+
 
 st.subheader("Operational overview")
 metrics = [
@@ -311,6 +377,8 @@ st.dataframe(final_qa, use_container_width=True, hide_index=True)
 st.subheader("Generate PowerPoint report")
 if template_path is None:
     st.info("Place the Generic Corridor Operations Report Template V1.pptx in the project folder or upload it above.")
+elif reporting_period.period_type != "Daily":
+    st.info("PowerPoint generation is currently limited to the existing daily Operations template. The selected multi-day period is calculated and validated above; the dynamic multi-period report builder will use the new period framework rather than forcing a daily template onto a quarterly/monthly report.")
 elif st.button("Generate OOP Corridor PowerPoint", type="primary"):
     if status == "REPORT BLOCKED":
         st.error("PowerPoint generation is blocked until critical QA failures are resolved.")

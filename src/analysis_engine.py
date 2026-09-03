@@ -355,6 +355,25 @@ def _quality_findings(df: pd.DataFrame, cols: dict[str, str | None]) -> pd.DataF
     return pd.DataFrame(findings)
 
 
+def _status_summary(df: pd.DataFrame, status_col: str | None, valid_case_mask: pd.Series) -> pd.DataFrame:
+    labels = ["Active", "Resolved", "Cancelled"]
+    if not status_col or status_col not in df.columns:
+        return pd.DataFrame(columns=["status_group", "cases", "share_pct"])
+    raw = df.loc[valid_case_mask, status_col].astype(str).str.strip()
+    normalized = raw.str.lower()
+    mapped = pd.Series("Other / Unknown", index=raw.index)
+    mapped[normalized.eq("active")] = "Active"
+    mapped[normalized.eq("resolved")] = "Resolved"
+    mapped[normalized.eq("cancelled") | normalized.eq("canceled")] = "Cancelled"
+    counts = mapped.value_counts()
+    total = len(mapped)
+    rows = [{"status_group": lab, "cases": int(counts.get(lab, 0)), "share_pct": round((counts.get(lab, 0) / total * 100) if total else 0, 2)} for lab in labels]
+    other = int(counts.get("Other / Unknown", 0))
+    if other:
+        rows.append({"status_group":"Other / Unknown", "cases":other, "share_pct":round(other/total*100,2)})
+    rows.append({"status_group":"Total", "cases":total, "share_pct":100.0 if total else 0.0})
+    return pd.DataFrame(rows)
+
 def analyze_operations(df: pd.DataFrame, total_wards: int | None = None, municipality: str = "", reporting_date=None, ward_master: dict[str, Any] | None = None, ward_history: pd.DataFrame | None = None) -> dict[str, Any]:
     cols = resolve_columns(df)
     rows = len(df)
@@ -387,6 +406,8 @@ def analyze_operations(df: pd.DataFrame, total_wards: int | None = None, municip
         ward_coverage = round(ward_count / benchmark_total * 100, 2)
         missing_wards = max(benchmark_total - ward_count, 0)
     status = _top_counts(df, cols["status"], 10)
+    # Management status mapping: Active = still open; Resolved = closed; Cancelled = cancelled for other reasons.
+    status_summary = _status_summary(df, cols["status"], valid_case_mask)
     created = pd.to_datetime(df[cols["created_on"]], errors="coerce") if cols.get("created_on") else pd.Series(pd.NaT, index=df.index)
     valid_all = created.notna() & valid_case_mask
     # Daily report channel mix is based on the manually selected reporting date.
@@ -476,6 +497,8 @@ def analyze_operations(df: pd.DataFrame, total_wards: int | None = None, municip
     ward_master_outside = int((ward_map["mapping_status"] == "Not in ward master").sum()) if not ward_map.empty else 0
     quality = _quality_findings(df, cols)
     return {
+        "source_df": df.copy(),
+        "reporting_date": reporting_date,
         "columns": cols,
         "summary": {
             "records": rows,
@@ -496,6 +519,7 @@ def analyze_operations(df: pd.DataFrame, total_wards: int | None = None, municip
             "ward_history_available": bool(ward_history is not None and not ward_history.empty),
         },
         "status": status,
+        "status_summary": status_summary,
         "channel": channel,
         "channel_all": channel_all,
         "channel_new_wards": channel_new_wards,

@@ -62,3 +62,41 @@ The app auto-versions output files if a same-date report already exists.
 - Separate municipalities/corridors never share ward history.
 - A later upload for an already represented date replaces the compact ward/date evidence for that date instead of unioning stale wards, supporting corrected datasets.
 - Retained history only contains compact date/ward/corridor/CCA evidence, not raw case data.
+
+## V2.9 — Data Quality & Validation Layer
+- Adds reporting-date integrity checks and confirms the selected reporting-date case count against the source rows.
+- Confirms records after the selected reporting date are excluded from date-based reporting.
+- Reconciles Active / Resolved / Cancelled / Other status totals to valid cases.
+- Checks ward mapping completeness and explicitly surfaces wards outside the supplied ward master without silently correcting them.
+- Checks weekly ward arithmetic: running + still needed must reconcile to the configured allocation benchmark.
+- Checks that New Wards cannot exceed daily cases and channel-level New Wards cannot exceed channel cases.
+- Reconciles ward-master listed allocations, unique ward numbers and duplicate allocations.
+- Reconciles corridor targets to the supplied ward-master allocation benchmark.
+- Critical QA failures block PowerPoint generation; warnings require review before circulation.
+
+
+## V3.0 — Dynamic Reporting Period Framework
+- Adds an explicit reporting-period layer supporting Daily, Weekly (Monday-Friday operating week), Monthly, Quarterly, Year-to-Date, Annual and Custom periods.
+- The user selects the anchor/reporting date; upload date and latest source timestamp never determine the reporting period.
+- Each period carries a start date, end date, human-readable label and an optional comparison period.
+- Period-level case counts and daily distributions are calculated independently from the existing daily Operations analysis.
+- Multi-period results are never relabelled as daily results. The current seven-slide Operations PowerPoint remains daily-specific until the dynamic Report Planner / Report Builder is integrated.
+- This framework is the foundation for the next stages: dynamic report planning, automatic report design, and period-aware PowerPoint/addendum generation for any department or internal requesting team.
+
+## V3.1 — Dynamic Report Planner
+
+The system now separates the **department/entity** from the **requesting internal team** and introduces a deterministic report-planning layer.
+
+Inputs to the planner:
+- Department/entity (for example SASSA, Home Affairs, Health, Education)
+- Requesting internal team (for example Operations Team, Entity Team, Management)
+- Explicit reporting period (Daily, Weekly, Monthly, Quarterly, Year-to-Date, Annual, Custom)
+- Dataset and its detected analytical capabilities
+- User instructions/focus
+- Intended audience
+
+The planner produces a report blueprint: recommended sections, purpose of each section, supported capabilities, focus gaps, main-report rules, addendum evidence requirements and design rules.
+
+This is the step before the automatic report designer. A supplied PowerPoint template is no longer treated as a prerequisite for planning a report. Existing template-driven generation remains available for the current Operations report while the automatic designer is developed.
+
+The planner is deterministic and evidence-aware: if a requested focus cannot be supported by the supplied data, it records a gap rather than inventing a metric.
