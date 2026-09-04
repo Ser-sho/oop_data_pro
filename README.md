@@ -100,3 +100,16 @@ The planner produces a report blueprint: recommended sections, purpose of each s
 This is the step before the automatic report designer. A supplied PowerPoint template is no longer treated as a prerequisite for planning a report. Existing template-driven generation remains available for the current Operations report while the automatic designer is developed.
 
 The planner is deterministic and evidence-aware: if a requested focus cannot be supported by the supplied data, it records a gap rather than inventing a metric.
+
+
+## V3.2 — Automatic Report Designer & Generator
+
+V3.2 adds a template-independent presentation path. The system now creates a presentation blueprint from the selected department/entity, requesting team, reporting period, audience, reporting requirements and available evidence, then renders a professional PowerPoint using a consistent visual system.
+
+Key rules:
+- A supplied PowerPoint template is optional; it remains available as a daily Operations compatibility path.
+- The automatic designer is the primary PowerPoint path and supports Daily, Weekly, Monthly, Quarterly, Year-to-Date, Annual and Custom periods.
+- Period-level distributions are recalculated from the selected reporting-period filter; the designer does not reuse whole-extract distributions for multi-period reports.
+- Unsupported metrics are omitted and requested unsupported focus areas remain visible as planner gaps.
+- Main-report slides stay concise; detailed calculations, source registers, exceptions and traceability remain in the analytical addendum.
+- Automatic blueprint QA checks slide presence, period labelling, mandatory executive/method sections and empty breakdowns before generation.

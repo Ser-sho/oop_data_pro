@@ -20,6 +20,8 @@ from qa_engine import run_report_qa, qa_status
 from voc_engine import analyze_voc
 from report_period import PERIOD_TYPES, resolve_reporting_period, summarize_period
 from report_planner import build_report_plan, plan_dataframe
+from report_designer import build_period_evidence, design_report, validate_blueprint
+from auto_ppt_generator import generate_auto_powerpoint
 
 st.set_page_config(page_title="OOP Corridor Daily Operations Report", layout="wide")
 st.title("Dynamic Operations & Analytics Reporting System")
@@ -374,12 +376,53 @@ else:
     st.error("🔴 REPORT BLOCKED — one or more critical QA checks failed.")
 st.dataframe(final_qa, use_container_width=True, hide_index=True)
 
-st.subheader("Generate PowerPoint report")
+st.subheader("Automatic Report Designer")
+period_evidence = build_period_evidence(analysis, reporting_period)
+blueprint = design_report(
+    report_plan, analysis, intelligence, audience_view, reporting_period,
+    period_evidence=period_evidence, period_summary=period_summary, voc_analysis=voc_analysis
+)
+blueprint_qa = validate_blueprint(blueprint)
+if blueprint_qa["status"].eq("PASS").all():
+    st.success(f"🟢 Automatic design ready — {len(blueprint['slides'])} slide(s) planned for {reporting_period.label}.")
+else:
+    st.warning("🟠 Automatic design requires review before generation.")
+st.dataframe(pd.DataFrame([{
+    "slide": i+1, "type": slide.get("type"), "title": slide.get("title")
+} for i, slide in enumerate(blueprint["slides"])]), use_container_width=True, hide_index=True)
+with st.expander("Automatic designer QA"):
+    st.dataframe(blueprint_qa, use_container_width=True, hide_index=True)
+
+if st.button("Generate Automatic PowerPoint", type="primary"):
+    if status == "REPORT BLOCKED":
+        st.error("PowerPoint generation is blocked until critical QA failures are resolved.")
+    elif not blueprint_qa["status"].eq("PASS").all():
+        st.error("Automatic report generation is blocked because the design blueprint failed QA.")
+    else:
+        out_dir = ROOT / "outputs"
+        out_dir.mkdir(exist_ok=True)
+        safe_dept = ''.join(ch if ch.isalnum() else '_' for ch in department.strip()).strip('_') or 'Report'
+        safe_team = ''.join(ch if ch.isalnum() else '_' for ch in requesting_team.strip()).strip('_') or 'Team'
+        base = out_dir / f"{safe_dept}_{safe_team}_{reporting_period.period_type.replace('-', '_')}_{reporting_period.anchor_date.strftime('%Y%m%d')}_Automatic_Report"
+        out_path = base.with_suffix('.pptx')
+        n = 2
+        while out_path.exists():
+            out_path = out_dir / f"{base.name}_v{n}.pptx"
+            n += 1
+        try:
+            generate_auto_powerpoint(out_path, blueprint)
+            st.success("Automatic PowerPoint report generated successfully.")
+            st.download_button("Download automatic PowerPoint", data=out_path.read_bytes(), file_name=out_path.name, mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        except Exception as exc:
+            st.error(f"Could not generate the automatic PowerPoint: {exc}")
+
+st.subheader("Template-based PowerPoint (optional)" )
+st.caption("The supplied template remains available as a compatibility path for daily Operations reports. The automatic designer above is the primary path and does not require a template.")
 if template_path is None:
-    st.info("Place the Generic Corridor Operations Report Template V1.pptx in the project folder or upload it above.")
+    st.info("No PowerPoint template supplied — this is fine for the automatic designer.")
 elif reporting_period.period_type != "Daily":
-    st.info("PowerPoint generation is currently limited to the existing daily Operations template. The selected multi-day period is calculated and validated above; the dynamic multi-period report builder will use the new period framework rather than forcing a daily template onto a quarterly/monthly report.")
-elif st.button("Generate OOP Corridor PowerPoint", type="primary"):
+    st.info("Template population remains limited to the existing daily Operations template. Use the automatic designer for Weekly, Monthly, Quarterly, Year-to-Date, Annual or Custom reports.")
+elif st.button("Generate Template-based OOP Corridor PowerPoint"):
     if status == "REPORT BLOCKED":
         st.error("PowerPoint generation is blocked until critical QA failures are resolved.")
     else:
@@ -393,8 +436,8 @@ elif st.button("Generate OOP Corridor PowerPoint", type="primary"):
             n += 1
         try:
             generate_powerpoint(template_path, out_path, analysis, intelligence, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"), audience_view=audience_view, voc_analysis=voc_analysis)
-            st.success("PowerPoint report generated successfully.")
-            st.download_button("Download PowerPoint report", data=out_path.read_bytes(), file_name=out_path.name, mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+            st.success("Template-based PowerPoint report generated successfully.")
+            st.download_button("Download template-based PowerPoint", data=out_path.read_bytes(), file_name=out_path.name, mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
         except Exception as exc:
             st.error(f"Could not generate the PowerPoint: {exc}")
 

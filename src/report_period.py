@@ -146,11 +146,16 @@ def summarize_period(
         )
     current = dates[current_mask]
     comparison = dates[comparison_mask]
+    current_count = int(current_mask.sum())
+    comparison_count = int(comparison_mask.sum())
+    change_pct = None if comparison_count == 0 else round((current_count - comparison_count) / comparison_count * 100, 2)
     return {
         "available": True,
         "period": period,
-        "current_records": int(current_mask.sum()),
-        "comparison_records": int(comparison_mask.sum()),
+        "current_records": current_count,
+        "comparison_records": comparison_count,
+        "comparison_case_count": comparison_count,
+        "change_pct": change_pct,
         "current_mask": current_mask,
         "comparison_mask": comparison_mask,
         "current_min": current.min() if not current.empty else None,
