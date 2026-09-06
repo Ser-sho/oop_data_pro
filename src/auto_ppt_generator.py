@@ -84,6 +84,24 @@ def add_kpi(slide,x,y,w,label,value,accent=BLUE):
 def _finding_text(row):
     return str(row.get('finding',''))
 
+def add_donut(slide, data, x, y, w, h):
+    if not data: return
+    cats=[str(r.get('value',''))[:22] for r in data]
+    vals=[float(r.get('cases',0) or 0) for r in data]
+    cd=ChartData(); cd.categories=cats; cd.add_series('Cases', vals)
+    ch=slide.shapes.add_chart(XL_CHART_TYPE.DOUGHNUT, Inches(x), Inches(y), Inches(w), Inches(h), cd).chart
+    ch.has_legend=True; ch.legend.position=XL_LEGEND_POSITION.RIGHT
+    try:
+        ch.legend.font.name=FONT; ch.legend.font.size=Pt(8)
+    except Exception: pass
+    try:
+        ch.plots[0].has_data_labels=True; ch.plots[0].data_labels.show_percentage=True
+        ch.plots[0].data_labels.font.name=FONT; ch.plots[0].data_labels.font.size=Pt(8)
+    except Exception: pass
+    return ch
+
+
+
 def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
     prs=Presentation(); prs.slide_width=Inches(13.333); prs.slide_height=Inches(7.5)
     blank=prs.slide_layouts[6]
@@ -115,6 +133,15 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
             for r in rows[:5]:
                 text(slide,0.85,y,0.45,0.32,str(r.get('id','•')),9,True,GOLD)
                 text(slide,1.28,y,10.95,0.55,_finding_text(r),10,False,DARK); y+=0.58
+        elif typ=='kpi_snapshot':
+            metrics=s.get('metrics',[])
+            widths=11.4/max(len(metrics),1)
+            for i,(label,value) in enumerate(metrics):
+                add_kpi(slide,0.75+i*widths,1.7,widths-0.18,label,value,BLUE if i==0 else NAVY)
+            box(slide,0.75,3.15,11.55,2.65,LIGHT,LIGHT)
+            text(slide,1.0,3.48,10.9,0.3,'Design decision',13,True,NAVY)
+            text(slide,1.0,3.95,10.8,1.25,'The automatic designer selected a KPI snapshot because the selected period does not contain enough daily observations for a meaningful trend chart.',10,False,DARK)
+            text(slide,1.0,5.35,10.8,0.3,'No trend is inferred from a single observation.',9,False,'5C6B78')
         elif typ=='trend':
             add_line(slide,s.get('data',[]),0.7,1.55,8.15,4.75)
             comp=s.get('comparison') or {}
@@ -127,7 +154,10 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
             note='Use the trend to identify concentration or change; do not infer causality from volume alone.'
             text(slide,9.4,4.62,2.75,1.0,note,9,False,DARK)
         elif typ=='breakdown':
-            add_chart(slide,s.get('data',[]),0.7,1.55,11.9,4.85,s.get('subtitle','Breakdown'))
+            if s.get('chart_type')=='donut':
+                add_donut(slide,s.get('data',[]),0.8,1.5,11.3,4.8)
+            else:
+                add_chart(slide,s.get('data',[]),0.7,1.55,11.9,4.85,s.get('subtitle','Breakdown'))
         elif typ=='coverage':
             val=s.get('value'); total=s.get('total')
             display=f"{val:,}" if isinstance(val,int) else 'Not available'

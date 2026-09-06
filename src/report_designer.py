@@ -155,6 +155,30 @@ def validate_blueprint(blueprint: dict[str, Any]) -> pd.DataFrame:
             checks.append({'check':'Breakdown slide has data','status':'FAIL','detail':s.get('title','Unnamed')})
     return pd.DataFrame(checks)
 
+def _materiality(df: pd.DataFrame) -> float:
+    if not isinstance(df, pd.DataFrame) or df.empty or 'share_pct' not in df.columns:
+        return 0.0
+    try:
+        return float(df.iloc[0]['share_pct'])
+    except Exception:
+        return 0.0
+
+
+def _audience_weights(audience: str, team: str) -> dict[str, int]:
+    text = f"{audience} {team}".lower()
+    weights = {'cases': 2, 'coverage': 1, 'resolution': 1, 'services': 1,
+               'channel': 1, 'location': 1, 'priority': 1, 'quality': 1}
+    if 'executive' in text or 'management' in text:
+        weights.update({'cases': 4, 'resolution': 3, 'coverage': 3, 'priority': 3, 'quality': 2})
+    if 'operations' in text:
+        weights.update({'cases': 4, 'coverage': 4, 'channel': 3, 'services': 3, 'quality': 3})
+    if 'entity' in text:
+        weights.update({'resolution': 4, 'services': 3, 'priority': 3, 'quality': 3})
+    if 'analyst' in text:
+        weights.update({'cases': 3, 'coverage': 3, 'resolution': 3, 'services': 3, 'channel': 3, 'quality': 3})
+    return weights
+
+
 def design_report(
     report_plan: dict[str, Any],
     analysis: dict[str, Any],
@@ -165,82 +189,137 @@ def design_report(
     period_summary: dict[str, Any] | None = None,
     voc_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Design a concise, evidence-led deck rather than mechanically mirroring the planner.
+
+    The designer makes three decisions: materiality, audience relevance and visual form.
+    It never creates a slide for a capability that is unavailable or a chart that has
+    insufficient observations to communicate a pattern.
+    """
     evidence = period_evidence or build_period_evidence(analysis, period)
     sections = report_plan.get('sections', [])
-    period_findings = _period_findings(evidence, analysis, period_summary)
-    period_actions = _period_actions(period_findings, evidence)
+    audience = report_plan.get('audience', '')
+    team = report_plan.get('requesting_team', '')
+    explicit = set(report_plan.get('explicit_focus', []) or [])
+    weights = _audience_weights(audience, team)
     slides: list[dict[str, Any]] = []
-    slides.append({'type':'cover','title':f"{report_plan.get('department','Report')} Operations & Analytics Report",'subtitle':report_plan.get('period_label','Selected reporting period')})
 
-    selected = [s for s in sections if _section_available(s['title'], evidence, analysis)]
-    # The executive slide is always first after cover.
-    slides.append({'type':'executive_summary','title':'Executive Summary','purpose':'Decision view','findings':period_findings[:5], 'comparison':period_summary or {}})
+    slides.append({'type':'cover', 'title':f"{report_plan.get('department','Report')} Operations & Analytics Report",
+                   'subtitle':report_plan.get('period_label','Selected reporting period')})
 
-    for s in selected:
-        title = s['title']
-        if title == 'Executive Summary':
+    findings = _period_findings(evidence, analysis, period_summary)
+    actions = _period_actions(findings, evidence)
+    slides.append({'type':'executive_summary', 'title':'Executive Summary', 'purpose':'Decision view',
+                   'findings':findings[:5], 'comparison':period_summary or {}})
+
+    # A KPI slide is more useful than a one-point trend for daily/small periods.
+    daily = evidence.get('daily', pd.DataFrame())
+    if isinstance(daily, pd.DataFrame) and len(daily) >= 2:
+        slides.append({'type':'trend', 'title':'Performance Trend',
+                       'subtitle':f"{getattr(period, 'period_type', 'Period')} case activity",
+                       'data':daily.to_dict('records'), 'comparison':period_summary or {}})
+    else:
+        slides.append({'type':'kpi_snapshot', 'title':'Period Performance Snapshot',
+                       'metrics':[
+                           ('Period cases', f"{int(evidence.get('case_count',0)):,}"),
+                           ('Distinct wards', str(evidence.get('distinct_wards')) if evidence.get('distinct_wards') is not None else 'Not available'),
+                           ('Comparison', (f"{period_summary.get('change_pct'):+.1f}%" if period_summary and isinstance(period_summary.get('change_pct'),(int,float)) else 'Not available')),
+                       ]})
+
+    candidates=[]
+    section_map = {
+        'Geographic / Coverage Position': ('coverage','coverage'),
+        'Case Workflow / Resolution Position': ('resolution','status'),
+        'Service and Demand Mix': ('services','category1'),
+        'Channel and Time Activity': ('channel','channel'),
+        'Location / Entity Performance': ('location','city'),
+        'Priority / Risk Position': ('priority','priority'),
+        'Voice of Citizen': ('customer','voc'),
+        'Data Quality and Limitations': ('quality','quality'),
+    }
+    focus_rank={f:i for i,f in enumerate(report_plan.get('planning_focus',[]) or [])}
+    for sec in sections:
+        title=sec.get('title','')
+        if title not in section_map or not _section_available(title,evidence,analysis):
             continue
-        if title == 'Performance and Activity':
-            slides.append({'type':'trend','title':'Performance and Activity','data':evidence.get('daily', pd.DataFrame()).to_dict('records'),'comparison':period_summary or {}})
-        elif title == 'Geographic / Coverage Position':
-            slides.append({'type':'coverage','title':'Geographic / Coverage Position','value':evidence.get('distinct_wards'),'total':analysis.get('summary',{}).get('total_wards'),'corridor':analysis.get('corridor_coverage',pd.DataFrame()).to_dict('records')})
+        focus, key=section_map[title]
+        if title == 'Voice of Citizen':
+            if not (voc_analysis and voc_analysis.get('available')): continue
+            mat=50.0
+        elif key == 'quality':
+            q=analysis.get('quality', pd.DataFrame()); mat=100.0 if isinstance(q,pd.DataFrame) and not q.empty else 0.0
+        else:
+            df=evidence.get(key, pd.DataFrame()); mat=_materiality(df)
+            if isinstance(df,pd.DataFrame) and len(df) < 2 and key not in {'city'}:
+                mat *= 0.35
+        score = weights.get(focus,1)*10 + max(0, 20-focus_rank.get(focus,10)) + min(mat,100)*0.20
+        if focus in explicit: score += 25
+        candidates.append((score,title,focus,key,mat))
+
+    # Avoid redundant mix slides: select the strongest few dimensions.
+    candidates.sort(reverse=True)
+    chosen=[]; used=[]
+    max_analytic = 4 if getattr(period,'period_type','Daily') in {'Daily','Weekly'} else 5
+    for item in candidates:
+        score,title,focus,key,mat=item
+        if focus in used: continue
+        chosen.append(item); used.append(focus)
+        if len(chosen)>=max_analytic: break
+
+    for _, title, focus, key, mat in chosen:
+        if title == 'Geographic / Coverage Position':
+            total=analysis.get('summary',{}).get('total_wards')
+            slides.append({'type':'coverage','title':title,'value':evidence.get('distinct_wards'),'total':total,
+                           'corridor':[]})
         elif title == 'Case Workflow / Resolution Position':
-            slides.append({'type':'breakdown','title':title,'subtitle':'Period-aligned status mix','data':evidence.get('status',pd.DataFrame()).to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Period-aligned status mix',
+                           'data':evidence.get('status',pd.DataFrame()).to_dict('records')})
         elif title == 'Service and Demand Mix':
-            slides.append({'type':'breakdown','title':title,'subtitle':'Leading Case Category 1','data':evidence.get('category1',pd.DataFrame()).to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Leading Case Category 1',
+                           'data':evidence.get('category1',pd.DataFrame()).to_dict('records')})
         elif title == 'Channel and Time Activity':
-            slides.append({'type':'breakdown','title':title,'subtitle':'Period channel mix','data':evidence.get('channel',pd.DataFrame()).to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'donut' if len(evidence.get('channel',pd.DataFrame())) <= 5 else 'bar',
+                           'title':title,'subtitle':'Period intake channel mix',
+                           'data':evidence.get('channel',pd.DataFrame()).to_dict('records')})
         elif title == 'Location / Entity Performance':
-            slides.append({'type':'breakdown','title':title,'subtitle':'Period location mix','data':evidence.get('city',pd.DataFrame()).to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Period location mix',
+                           'data':evidence.get('city',pd.DataFrame()).to_dict('records')})
         elif title == 'Priority / Risk Position':
-            slides.append({'type':'breakdown','title':title,'subtitle':'Period priority mix','data':evidence.get('priority',pd.DataFrame()).to_dict('records')})
-        elif title == 'Voice of Citizen' and voc_analysis and voc_analysis.get('available'):
+            slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Period priority mix',
+                           'data':evidence.get('priority',pd.DataFrame()).to_dict('records')})
+        elif title == 'Voice of Citizen':
             slides.append({'type':'voc','title':title,'data':voc_analysis})
         elif title == 'Data Quality and Limitations':
-            q = analysis.get('quality', pd.DataFrame())
+            q=analysis.get('quality',pd.DataFrame())
             slides.append({'type':'quality','title':title,'data':q.head(8).to_dict('records')})
-        elif title == 'Actions and Management Decisions':
-            slides.append({'type':'actions','title':title,'data':period_actions[:6]})
-        elif title == 'Evidence and Method Note':
-            slides.append({'type':'method','title':title,'items':report_plan.get('addendum_items',[])[:8]})
 
-    # Always finish with a concise methodology/evidence slide if the planner did
-    # not already add one. Detailed registers remain in the addendum.
-    if not any(s['type']=='method' for s in slides):
-        slides.append({'type':'method','title':'Evidence and Method Note','items':report_plan.get('addendum_items',[])[:8]})
+    slides.append({'type':'actions','title':'Actions and Management Decisions','data':actions[:6]})
+    slides.append({'type':'method','title':'Evidence and Method Note','items':report_plan.get('addendum_items',[])[:8]})
 
-    # Avoid overlong decks. Automatic design is intentionally management-sized.
-    max_slides = 10 if report_plan.get('audience') != 'Executive management' else 8
-    if len(slides) > max_slides:
-        # Preserve cover, executive, actions and method; drop lower-ranked middle slides first.
-        must_types = {'cover','executive_summary','actions','method'}
-        kept=[]
-        for s in slides:
-            if s['type'] in must_types:
-                kept.append(s)
-        for s in slides:
-            if s in kept:
-                continue
-            if len(kept) >= max_slides:
-                break
-            kept.append(s)
-        # restore logical order from original sequence
-        slides = [s for s in slides if s in kept]
+    max_slides = 9 if 'Executive' in str(audience) else 10
+    if len(slides)>max_slides:
+        # Preserve cover, executive, snapshot/trend, actions and method; trim weakest analytics.
+        fixed_types={'cover','executive_summary','kpi_snapshot','trend','actions','method'}
+        fixed=[s for s in slides if s['type'] in fixed_types]
+        middle=[s for s in slides if s['type'] not in fixed_types]
+        slides=fixed[:max_slides]
+        remaining=max_slides-len(slides)
+        if remaining>0: slides=fixed + middle[:remaining]
+        # Restore original logical order using object identity.
+        ordered=[]
+        for s in [*slides]:
+            ordered.append(s)
+        slides=ordered
 
     return {
-        'version':'1.0',
-        'department':report_plan.get('department'),
-        'requesting_team':report_plan.get('requesting_team'),
-        'audience':report_plan.get('audience'),
-        'period_type':getattr(period,'period_type','Daily'),
-        'period_label':getattr(period,'label','Selected reporting period'),
-        'slides':slides,
-        'period_evidence':evidence,
-        'period_findings':period_findings,
-        'period_actions':period_actions,
-        'rules': {
-            'no_fabrication': True,
-            'main_report_concise': True,
-            'detailed_evidence_in_addendum': True,
-        },
+        'version':'1.1', 'department':report_plan.get('department'), 'requesting_team':team,
+        'audience':audience, 'period_type':getattr(period,'period_type','Daily'),
+        'period_label':getattr(period,'label','Selected reporting period'), 'slides':slides,
+        'period_evidence':evidence, 'period_findings':findings, 'period_actions':actions,
+        'selection_log': [
+            {'section':x[1], 'score':round(x[0],1), 'focus':x[2], 'materiality':round(x[4],1)}
+            for x in chosen
+        ],
+        'rules': {'no_fabrication':True,'main_report_concise':True,'detailed_evidence_in_addendum':True,
+                  'materiality_driven_selection':True,'audience_driven_selection':True,
+                  'avoid_single_point_trends':True},
     }
