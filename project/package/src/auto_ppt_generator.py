@@ -6,7 +6,7 @@ import pandas as pd
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION, XL_LABEL_POSITION
 from pptx.chart.data import ChartData
@@ -25,8 +25,7 @@ def box(slide, x,y,w,h, fill=WHITE, line=MID, radius=True):
 
 def text(slide, x,y,w,h, value, size=16, bold=False, color=DARK, align=PP_ALIGN.LEFT, valign=MSO_ANCHOR.TOP):
     tb=slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
-    tf=tb.text_frame; tf.clear(); tf.vertical_anchor=valign; tf.word_wrap=True; tf.auto_size=MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-    tf.margin_left=Inches(0.02); tf.margin_right=Inches(0.02); tf.margin_top=Inches(0.01); tf.margin_bottom=Inches(0.01)
+    tf=tb.text_frame; tf.clear(); tf.vertical_anchor=valign
     p=tf.paragraphs[0]; p.alignment=align
     r=p.add_run(); r.text=str(value); r.font.name=FONT; r.font.size=Pt(size); r.font.bold=bold; r.font.color.rgb=rgb(color)
     return tb
@@ -134,28 +133,6 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
             for r in rows[:5]:
                 text(slide,0.85,y,0.45,0.32,str(r.get('id','•')),9,True,GOLD)
                 text(slide,1.28,y,10.95,0.55,_finding_text(r),10,False,DARK); y+=0.58
-        elif typ=='daily_snapshot':
-            metrics=s.get('metrics',[])
-            cols=3; gap=0.22; card_w=(11.7-gap*2)/cols
-            for i,(label,value) in enumerate(metrics):
-                row=i//cols; col=i%cols
-                add_kpi(slide,0.65+col*(card_w+gap),1.55+row*1.22,card_w,label,f"{value:,}" if isinstance(value,(int,float)) else str(value),BLUE if i in (0,2) else NAVY)
-            pace=s.get('pace'); days=s.get('remaining_days')
-            box(slide,0.65,4.25,11.7,1.55,LIGHT,LIGHT)
-            text(slide,0.9,4.52,2.7,0.25,'Operational pacing',10,True,NAVY)
-            pace_txt=(f"Suggested new wards per remaining working day: {pace:,} across {days} remaining working day(s)." if isinstance(pace,(int,float)) and isinstance(days,(int,float)) and days>0 else 'No pacing recommendation is calculated from the available evidence.')
-            text(slide,0.9,4.9,10.9,0.55,pace_txt,10,False,DARK)
-            text(slide,0.9,5.48,10.9,0.25,'The pace is a recommendation based on the configured ward benchmark and remaining Monday–Friday days, not an observed performance value.',8,False,'5C6B78')
-        elif typ=='channel_time':
-            channel=s.get('channel',[]) or []; hourly=s.get('hourly',[]) or []
-            if channel:
-                add_donut(slide,channel[:5],0.65,1.5,5.45,4.9) if len(channel)<=5 else add_chart(slide,channel[:8],0.65,1.5,5.45,4.9,'Channel cases')
-            else:
-                box(slide,0.65,1.5,5.45,4.9,LIGHT,LIGHT); text(slide,0.95,3.2,4.8,0.6,'Channel data not available.',11,False,'687783')
-            if hourly:
-                add_chart(slide,[{'value':f"{int(r['hour']):02d}:00",'cases':r['cases']} for r in hourly],6.45,1.5,5.9,4.9,'Cases by hour')
-            else:
-                box(slide,6.45,1.5,5.9,4.9,LIGHT,LIGHT); text(slide,6.8,3.2,5.1,0.6,'Hourly activity data not available.',11,False,'687783')
         elif typ=='kpi_snapshot':
             metrics=s.get('metrics',[])
             widths=11.4/max(len(metrics),1)
@@ -190,20 +167,11 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
                 add_kpi(slide,3.95,1.65,3.0,'Configured total',f"{total:,}",NAVY)
                 add_kpi(slide,7.15,1.65,3.0,'Coverage',f"{pct:.1f}%" if pct is not None else 'Not available',GREEN if pct==100 else BLUE)
             rows=s.get('corridor',[])
-            cca=s.get('cca',[]) or []
             if rows:
-                cats=[str(r.get('corridor','')) for r in rows]; covered=[float(r.get('covered',0)) for r in rows]; missing=[float(r.get('missing',0)) for r in rows]
+                cats=[r.get('corridor','') for r in rows]; covered=[float(r.get('covered',0)) for r in rows]; missing=[float(r.get('missing',0)) for r in rows]
                 cd=ChartData(); cd.categories=cats; cd.add_series('Covered',covered); cd.add_series('Missing',missing)
-                ch=slide.shapes.add_chart(XL_CHART_TYPE.BAR_STACKED, Inches(0.75), Inches(3.05), Inches(7.0), Inches(2.95), cd).chart; ch.has_legend=True; ch.legend.position=XL_LEGEND_POSITION.BOTTOM
+                ch=slide.shapes.add_chart(XL_CHART_TYPE.BAR_STACKED, Inches(0.75), Inches(3.15), Inches(11.3), Inches(2.75), cd).chart; ch.has_legend=True; ch.legend.position=XL_LEGEND_POSITION.BOTTOM
                 for i,c in enumerate([BLUE,GOLD]): ch.series[i].format.fill.solid(); ch.series[i].format.fill.fore_color.rgb=rgb(c)
-            if cca:
-                box(slide,8.0,3.05,4.15,2.95,WHITE,MID)
-                text(slide,8.25,3.28,3.65,0.25,'CCA position',10,True,NAVY)
-                y=3.72
-                for r in cca[:7]:
-                    label=f"{str(r.get('cca',''))[:19]} — {int(r.get('covered',0))}/{int(r.get('target',0))}"
-                    text(slide,8.25,y,3.6,0.28,label,7.5,False,DARK); y+=0.34
-                if len(cca)>7: text(slide,8.25,5.72,3.6,0.2,f"+ {len(cca)-7} more CCA rows in addendum",7,False,'687783')
         elif typ=='actions':
             rows=s.get('data',[])
             y=1.55
