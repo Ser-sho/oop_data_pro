@@ -82,6 +82,12 @@ def add_kpi(slide,x,y,w,label,value,accent=BLUE):
     text(slide,x+0.16,y+0.14,w-0.3,0.25,label,8,False,'687783')
     text(slide,x+0.16,y+0.40,w-0.3,0.43,value,20,True,accent)
 
+def add_insight_box(slide, x, y, w, h, insight, title="What the chart means"):
+    box(slide,x,y,w,h,LIGHT,LIGHT)
+    text(slide,x+0.18,y+0.12,w-0.36,0.24,title,9,True,NAVY)
+    text(slide,x+0.18,y+0.40,w-0.36,h-0.50,insight or 'No additional interpretation is available.',9,False,DARK)
+
+
 def _finding_text(row):
     return str(row.get('finding',''))
 
@@ -149,13 +155,14 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
         elif typ=='channel_time':
             channel=s.get('channel',[]) or []; hourly=s.get('hourly',[]) or []
             if channel:
-                add_donut(slide,channel[:5],0.65,1.5,5.45,4.9) if len(channel)<=5 else add_chart(slide,channel[:8],0.65,1.5,5.45,4.9,'Channel cases')
+                add_chart(slide,channel[:8],0.65,1.48,5.35,4.0,'Cases by channel')
             else:
-                box(slide,0.65,1.5,5.45,4.9,LIGHT,LIGHT); text(slide,0.95,3.2,4.8,0.6,'Channel data not available.',11,False,'687783')
+                box(slide,0.65,1.48,5.35,4.0,LIGHT,LIGHT); text(slide,0.95,3.1,4.7,0.6,'Channel data not available.',11,False,'687783')
             if hourly:
-                add_chart(slide,[{'value':f"{int(r['hour']):02d}:00",'cases':r['cases']} for r in hourly],6.45,1.5,5.9,4.9,'Cases by hour')
+                add_chart(slide,[{'value':f"{int(r['hour']):02d}:00",'cases':r['cases']} for r in hourly],6.25,1.48,6.05,4.0,'Cases by hour')
             else:
-                box(slide,6.45,1.5,5.9,4.9,LIGHT,LIGHT); text(slide,6.8,3.2,5.1,0.6,'Hourly activity data not available.',11,False,'687783')
+                box(slide,6.25,1.48,6.05,4.0,LIGHT,LIGHT); text(slide,6.6,3.1,5.2,0.6,'Hourly activity data not available.',11,False,'687783')
+            add_insight_box(slide,0.65,5.62,11.65,0.85,s.get('insight',''))
         elif typ=='kpi_snapshot':
             metrics=s.get('metrics',[])
             widths=11.4/max(len(metrics),1)
@@ -178,9 +185,10 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
             text(slide,9.4,4.62,2.75,1.0,note,9,False,DARK)
         elif typ=='breakdown':
             if s.get('chart_type')=='donut':
-                add_donut(slide,s.get('data',[]),0.8,1.5,11.3,4.8)
+                add_donut(slide,s.get('data',[]),0.8,1.5,7.0,4.0)
             else:
-                add_chart(slide,s.get('data',[]),0.7,1.55,11.9,4.85,s.get('subtitle','Breakdown'))
+                add_chart(slide,s.get('data',[]),0.7,1.5,7.55,4.15,s.get('subtitle','Cases by segment'))
+            add_insight_box(slide,8.45,1.5,4.0,4.15,s.get('insight',''))
         elif typ=='coverage':
             val=s.get('value'); total=s.get('total')
             display=f"{val:,}" if isinstance(val,int) else 'Not available'
@@ -194,33 +202,52 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
             if rows:
                 cats=[str(r.get('corridor','')) for r in rows]; covered=[float(r.get('covered',0)) for r in rows]; missing=[float(r.get('missing',0)) for r in rows]
                 cd=ChartData(); cd.categories=cats; cd.add_series('Covered',covered); cd.add_series('Missing',missing)
-                ch=slide.shapes.add_chart(XL_CHART_TYPE.BAR_STACKED, Inches(0.75), Inches(3.05), Inches(7.0), Inches(2.95), cd).chart; ch.has_legend=True; ch.legend.position=XL_LEGEND_POSITION.BOTTOM
+                ch=slide.shapes.add_chart(XL_CHART_TYPE.BAR_STACKED, Inches(0.75), Inches(3.05), Inches(7.0), Inches(2.55), cd).chart; ch.has_legend=True; ch.legend.position=XL_LEGEND_POSITION.BOTTOM
+                try:
+                    ch.legend.font.name=FONT; ch.legend.font.size=Pt(9)
+                except Exception: pass
                 for i,c in enumerate([BLUE,GOLD]): ch.series[i].format.fill.solid(); ch.series[i].format.fill.fore_color.rgb=rgb(c)
             if cca:
-                box(slide,8.0,3.05,4.15,2.95,WHITE,MID)
-                text(slide,8.25,3.28,3.65,0.25,'CCA position',10,True,NAVY)
-                y=3.72
-                for r in cca[:7]:
-                    label=f"{str(r.get('cca',''))[:19]} — {int(r.get('covered',0))}/{int(r.get('target',0))}"
-                    text(slide,8.25,y,3.6,0.28,label,7.5,False,DARK); y+=0.34
-                if len(cca)>7: text(slide,8.25,5.72,3.6,0.2,f"+ {len(cca)-7} more CCA rows in addendum",7,False,'687783')
+                box(slide,8.0,3.05,4.15,2.55,WHITE,MID)
+                text(slide,8.25,3.25,3.65,0.25,'CCA position',10,True,NAVY)
+                text(slide,8.25,3.56,1.55,0.2,'CCA',7,True,'687783'); text(slide,10.25,3.56,0.55,0.2,'Cov.',7,True,'687783'); text(slide,11.05,3.56,0.7,0.2,'Rate',7,True,'687783')
+                y=3.84
+                for r in sorted(cca,key=lambda z: (float(z.get('covered',0))/float(z.get('target',1)) if z.get('target') else 0))[:6]:
+                    target=float(r.get('target',0) or 0); cov=float(r.get('covered',0) or 0); rate=(cov/target*100) if target else 0
+                    label=str(r.get('cca',''))[:20]
+                    text(slide,8.25,y,1.85,0.25,label,7.2,False,DARK); text(slide,10.25,y,0.55,0.25,f'{int(cov)}/{int(target)}',7.2,False,DARK); text(slide,11.05,y,0.7,0.25,f'{rate:.0f}%',7.2,False,DARK); y+=0.31
+                if len(cca)>6: text(slide,8.25,5.48,3.6,0.2,f"+ {len(cca)-6} more CCA rows in addendum",7,False,'687783')
+            add_insight_box(slide,0.75,5.78,11.4,0.72,s.get('insight',''))
         elif typ=='actions':
             rows=s.get('data',[])
-            y=1.55
-            for r in rows[:6]:
-                box(slide,0.75,y,11.75,0.72,WHITE,MID)
-                text(slide,0.95,y+0.11,0.75,0.25,str(r.get('priority','Action')),8,True,GOLD)
-                text(slide,1.7,y+0.08,9.95,0.48,str(r.get('recommendation','')),10,False,DARK)
-                y+=0.82
-            if not rows: text(slide,0.8,1.65,11.5,0.6,'No evidence-backed recommendations were produced from the available data.',11,False,'687783')
+            if rows:
+                # A compact decision register: what is observed, what should happen, and how success is checked.
+                text(slide,0.85,1.38,2.0,0.22,'PRIORITY',7,True,'687783'); text(slide,1.95,1.38,5.15,0.22,'DECISION / ACTION',7,True,'687783'); text(slide,7.1,1.38,3.45,0.22,'WHY NOW',7,True,'687783'); text(slide,10.6,1.38,1.55,0.22,'EVIDENCE',7,True,'687783')
+                y=1.68
+                for r in rows[:5]:
+                    box(slide,0.75,y,11.75,0.86,WHITE,MID)
+                    priority=str(r.get('priority','Review')); accent=RED if priority.lower() in {'critical','high'} else GOLD
+                    text(slide,0.95,y+0.15,0.85,0.25,priority,8,True,accent)
+                    action=str(r.get('recommended_action',r.get('recommendation','Review the evidence and assign the appropriate operational response.')))
+                    reason=str(r.get('trigger',r.get('finding',r.get('decision_gate','Evidence requires management review.'))))
+                    evidence_ref=str(r.get('evidence_ref','Evidence register'))
+                    text(slide,1.95,y+0.10,4.95,0.58,action,8.5,True,NAVY)
+                    text(slide,7.1,y+0.10,3.25,0.58,reason,8,False,DARK)
+                    text(slide,10.6,y+0.10,1.55,0.58,evidence_ref,7.5,False,'687783')
+                    y+=0.98
+            else:
+                box(slide,0.8,1.65,11.5,2.0,LIGHT,LIGHT); text(slide,1.05,2.1,10.9,0.55,'No evidence-backed management actions were produced.',12,True,GREEN); text(slide,1.05,2.78,10.9,0.45,'The report does not invent actions where the available evidence does not support them.',9,False,DARK)
         elif typ=='quality':
             rows=s.get('data',[])
             y=1.55
-            if not rows: text(slide,0.8,y,11.5,0.6,'No mapped operational quality findings were detected.',11,False,GREEN)
-            for r in rows[:7]:
-                box(slide,0.75,y,11.75,0.68,WHITE,MID)
-                text(slide,0.95,y+0.09,1.0,0.25,str(r.get('severity','Review')),8,True,RED if str(r.get('severity','')).lower()=='high' else GOLD)
-                text(slide,1.9,y+0.08,10.25,0.48,str(r.get('finding',r.get('rule',''))),9,False,DARK); y+=0.77
+            if not rows:
+                box(slide,0.75,1.55,11.75,2.0,LIGHT,LIGHT); text(slide,1.0,2.05,10.9,0.55,'No material data-quality exception was detected in the mapped checks.',12,True,GREEN); text(slide,1.0,2.72,10.9,0.45,'This means the report can use the available fields without a known blocking quality issue.',9,False,DARK)
+            for r in rows[:6]:
+                sev=str(r.get('severity','Review')); sev_l=sev.lower(); accent=RED if sev_l in {'high','critical','red'} else GOLD
+                box(slide,0.75,y,11.75,0.72,WHITE,MID)
+                text(slide,0.95,y+0.10,1.0,0.25,sev,8,True,accent)
+                text(slide,1.9,y+0.08,10.25,0.48,str(r.get('finding',r.get('rule',''))),9,False,DARK); y+=0.81
+            add_insight_box(slide,0.75,6.48,11.75,0.45,'These are limitations or control exceptions that affect how the report should be interpreted. They are not automatically failures of the underlying operation.')
         elif typ=='method':
             box(slide,0.75,1.55,11.75,4.8,LIGHT,LIGHT)
             text(slide,1.0,1.85,10.9,0.35,'How to verify this report',13,True,NAVY)
@@ -228,6 +255,53 @@ def generate_auto_powerpoint(out_path: Path, blueprint: dict[str,Any]):
             for item in s.get('items',[]):
                 text(slide,1.0,y,0.3,0.25,'•',10,True,GOLD); text(slide,1.3,y,10.55,0.48,str(item).capitalize(),9,False,DARK); y+=0.48
             text(slide,1.0,5.75,10.8,0.35,'Detailed calculations, source registers, exceptions and traceability belong in the analytical addendum.',9,False,'5C6B78')
+        elif typ=='extreme_diagnostic_pareto':
+            pareto=s.get('pareto',[]) or []
+            box(slide,0.75,1.45,11.75,4.95,WHITE,MID)
+            text(slide,1.0,1.72,10.9,0.35,'Pareto priority screen',14,True,NAVY)
+            if pareto:
+                add_chart(slide,[{'value':str(r.get('value','')),'cases':r.get('cases',0)} for r in pareto[:9]],1.0,2.18,10.7,3.55,'Largest concentration segments')
+                top_n=min(3,len(pareto)); cum=float(pareto[top_n-1].get('cumulative_pct',0))
+                text(slide,1.0,5.92,10.6,0.30,f'Cumulative share across the first {top_n} segment(s): {cum:.1f}%. Use this as a prioritisation signal, not a causal conclusion.',9,False,'5C6B78')
+            else:
+                text(slide,1.0,2.25,10.6,0.5,'No Pareto ranking was produced because the selected-period evidence did not contain a usable breakdown.',11,False,DARK)
+        elif typ=='extreme_diagnostic_framework':
+            fish=s.get('fishbone',[]) or []; five=s.get('five_whys',[]) or []
+            box(slide,0.65,1.45,7.05,4.95,WHITE,MID); text(slide,0.92,1.72,6.4,0.35,'Fishbone investigation frame',13,True,NAVY)
+            y=2.12
+            for r in fish[:8]:
+                text(slide,0.95,y,2.35,0.28,str(r.get('fishbone_category',''))[:28],8.5,True,DARK)
+                text(slide,3.30,y,3.95,0.42,str(r.get('evidence_signal',''))[:105],8.5,False,DARK); y+=0.49
+            box(slide,7.95,1.45,4.7,4.95,LIGHT,LIGHT); text(slide,8.22,1.72,4.15,0.35,'Five Whys prompts',13,True,NAVY)
+            if five:
+                y=2.15
+                for i,r in enumerate(five[:3],1):
+                    text(slide,8.22,y,4.0,0.28,f"{i}. {str(r.get('dimension','')).title()}",9,True,DARK)
+                    text(slide,8.22,y+0.34,4.0,0.80,str(r.get('why_1','')),8.5,False,DARK)
+                    y+=1.25
+                text(slide,8.22,5.92,4.0,0.30,'Answers require verified operational evidence.',8.5,False,'5C6B78')
+            else:
+                text(slide,8.22,2.20,4.0,0.5,'No materially concentrated segment generated a Five Whys prompt.',9,False,DARK)
+        elif typ=='extreme_predictive':
+            pred=s.get('predictive',{}) or {}; series=s.get('series',[]) or []
+            if series: add_line(slide,[{'date':r['date'],'cases':r['cases']} for r in series],0.75,1.55,8.0,4.7)
+            box(slide,9.0,1.55,3.55,4.7,LIGHT,LIGHT); text(slide,9.25,1.85,2.9,0.3,'Predictive screen',12,True,NAVY)
+            text(slide,9.25,2.35,2.9,0.25,'Historical observations',8,False,'687783'); text(slide,9.25,2.65,2.9,0.42,str(pred.get('historical_days','Not available')),20,True,BLUE)
+            text(slide,9.25,3.35,2.9,0.25,'Trend',8,False,'687783'); text(slide,9.25,3.65,2.9,0.42,str(pred.get('direction','Not available')).title(),16,True,NAVY)
+            text(slide,9.25,4.30,2.9,0.25,'Next-day screen',8,False,'687783'); text(slide,9.25,4.58,2.9,0.42,str(pred.get('next_day_screen','Not available')),18,True,BLUE)
+            text(slide,9.25,5.25,2.9,0.65,'Simple trend only. It is not a guaranteed forecast and does not model causality or seasonality.',8,False,DARK)
+        elif typ=='extreme_optimisation':
+            rows=s.get('findings',[]) or []
+            y=1.55
+            for r in rows[:6]:
+                box(slide,0.75,y,11.75,0.76,WHITE,MID)
+                text(slide,0.95,y+0.10,1.15,0.25,str(r.get('maturity_level','L4')),8,True,GOLD)
+                text(slide,2.0,y+0.07,9.9,0.28,str(r.get('finding',''))[:150],9,True,NAVY)
+                text(slide,2.0,y+0.37,9.9,0.25,str(r.get('recommendation',''))[:170],8,False,DARK)
+                y+=0.82
+            if not rows: text(slide,0.8,1.65,11.5,0.6,'No optimisation candidates were produced from the available evidence.',11,False,'687783')
+            gaps=s.get('gaps',[]) or []
+            if gaps: text(slide,0.8,6.25,11.5,0.35,'Evidence gates: '+ ' | '.join(gaps[:2]),7.5,False,'5C6B78')
         elif typ=='voc':
             data=s.get('data') or {}
             box(slide,0.8,1.6,3.1,2.0,WHITE,MID); text(slide,1.05,1.95,2.5,0.25,'VoC responses',8,False,'687783'); text(slide,1.05,2.32,2.5,0.55,str(data.get('responses',0)),24,True,BLUE)

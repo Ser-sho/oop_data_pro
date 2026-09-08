@@ -54,10 +54,25 @@ def build_period_evidence(analysis: dict[str, Any], period: Any) -> dict[str, An
     for key in ['status','channel','case_type','priority','city','category1','category2','category3','owner']:
         out[key] = _top(work, cols.get(key), 8)
     if cols.get('ward') and cols['ward'] in work.columns:
-        wards = work[cols['ward']].astype('string').str.strip().replace({'': pd.NA, 'nan': pd.NA}).dropna()
-        out['distinct_wards'] = int(wards.nunique())
+        # Prefer the normalized/mapped ward register from the analysis engine so
+        # CRM-style IDs are compared consistently with the supplied ward master.
+        mapped = analysis.get('ward_mapping')
+        if isinstance(mapped, pd.DataFrame) and 'ward' in mapped.columns:
+            wm = mapped.reindex(work.index)
+            wards = wm['ward'].astype('string').str.strip().replace({'': pd.NA, 'nan': pd.NA}).dropna()
+            out['distinct_wards'] = int(wards.nunique())
+            if 'mapping_status' in wm.columns:
+                out['distinct_wards_matched'] = int(wm.loc[wm['mapping_status'].astype(str).str.startswith('Matched'), 'ward'].dropna().astype(str).nunique())
+                out['wards_outside_master'] = int(wm.loc[wm['mapping_status'].astype(str).eq('Not in ward master'), 'ward'].dropna().astype(str).nunique())
+        else:
+            wards = work[cols['ward']].astype('string').str.strip().replace({'': pd.NA, 'nan': pd.NA}).dropna()
+            out['distinct_wards'] = int(wards.nunique())
+            out['distinct_wards_matched'] = None
+            out['wards_outside_master'] = None
     else:
         out['distinct_wards'] = None
+        out['distinct_wards_matched'] = None
+        out['wards_outside_master'] = None
     # Status counts are kept explicit for audience-specific workflow slides.
     if not out['status'].empty:
         st = out['status']
@@ -150,6 +165,14 @@ def validate_blueprint(blueprint: dict[str, Any]) -> pd.DataFrame:
     checks.append({'check':'Cover includes reporting period','status':'PASS' if blueprint.get('period_label') else 'FAIL','detail':str(blueprint.get('period_label',''))})
     checks.append({'check':'Executive summary present','status':'PASS' if any(s.get('type')=='executive_summary' for s in slides) else 'FAIL','detail':'Management summary is mandatory.'})
     checks.append({'check':'Method/evidence note present','status':'PASS' if any(s.get('type')=='method' for s in slides) else 'FAIL','detail':'Evidence route is explicit.'})
+    checks.append({'check':'V3.10 analysis mode declared','status':'PASS' if blueprint.get('analysis_mode') in {'Normal Analysis','Extreme Analysis'} else 'FAIL','detail':str(blueprint.get('analysis_mode',''))})
+    if blueprint.get('analysis_mode') == 'Extreme Analysis':
+        present={s.get('type') for s in slides}
+        checks.append({'check':'Extreme diagnostic layers','status':'PASS' if ({'extreme_diagnostic_pareto','extreme_diagnostic_framework'} <= present) or not blueprint.get('maturity_plan',{}).get('available_levels',[]) else 'WARNING','detail':'Pareto and diagnostic investigation views are separated for readability.'})
+        exqa = blueprint.get('extreme_analysis',{}).get('qa')
+        if isinstance(exqa, pd.DataFrame):
+            checks.append({'check':'Extreme analytical QA','status':'PASS' if exqa.empty or exqa['status'].eq('PASS').all() else 'FAIL','detail':'All Extreme Analysis evidence, confidence and decision-gate checks must pass.'})
+        checks.append({'check':'Extreme optimisation layer','status':'PASS' if 'extreme_optimisation' in present else 'FAIL','detail':'Optimisation/control review is mandatory in Extreme Analysis.'})
     if blueprint.get('period_type') == 'Daily':
         required = {'daily_snapshot','actions','method','executive_summary'}
         present = {s.get('type') for s in slides}
@@ -186,6 +209,50 @@ def _audience_weights(audience: str, team: str) -> dict[str, int]:
     return weights
 
 
+
+def _breakdown_insight(data, label='segment') -> str:
+    if not data:
+        return 'No usable data was available for this view.'
+    try:
+        rows=sorted(data, key=lambda r: float(r.get('cases',0) or 0), reverse=True)
+        top=rows[0]; total=sum(float(r.get('cases',0) or 0) for r in rows)
+        n=int(float(top.get('cases',0) or 0)); share=(n/total*100) if total else 0
+        name=str(top.get('value','')).strip() or 'The leading segment'
+        if len(rows)>1:
+            second=str(rows[1].get('value','')).strip() or 'the next segment'
+            return f"{name} leads this {label} with {n:,} cases ({share:.1f}%). The next segment is {second}; use this view to focus attention where activity is concentrated, not to infer cause."
+        return f"{name} accounts for {n:,} cases ({share:.1f}%) in the selected period. This identifies the main concentration of activity; it does not by itself indicate a performance failure or root cause."
+    except Exception:
+        return 'The chart shows the largest observed segments for the selected period. Use the concentration as a prioritisation signal, not a causal conclusion.'
+
+
+def _coverage_insight(evidence, summary, represented_override=None) -> str:
+    total=summary.get('total_wards')
+    represented=evidence.get('distinct_wards') if represented_override is None else represented_override
+    if represented is None or not total:
+        return 'Ward representation is shown only where an official ward benchmark is available. Unrepresented wards should be treated as a follow-up queue, not as zero demand.'
+    pct=float(represented)/float(total)*100 if total else 0
+    missing=max(int(total)-int(represented),0)
+    if pct >= 100:
+        return f"All {int(total):,} configured wards are represented in the evidence. Geographic coverage is complete for the selected period."
+    if pct == 0:
+        return f"No configured wards are represented in the selected period. All {int(total):,} wards remain a coverage gap and should move to the follow-up queue."
+    return f"{int(represented):,} of {int(total):,} configured wards are represented ({pct:.1f}%), leaving {missing:,} unrepresented. Prioritise the uncovered wards before treating the period as geographically representative."
+
+
+def _channel_time_insight(channel, hourly) -> str:
+    parts=[]
+    if channel:
+        top=max(channel,key=lambda r: float(r.get('cases',0) or 0)); total=sum(float(r.get('cases',0) or 0) for r in channel)
+        share=(float(top.get('cases',0) or 0)/total*100) if total else 0
+        parts.append(f"{top.get('value','Leading channel')} carries {int(float(top.get('cases',0) or 0)):,} cases ({share:.1f}%)")
+    if hourly:
+        peak=max(hourly,key=lambda r: float(r.get('cases',0) or 0))
+        parts.append(f"peak activity is {int(float(peak.get('cases',0) or 0)):,} cases at {int(peak.get('hour',0)):02d}:00")
+    if not parts: return 'No channel or hourly evidence is available.'
+    return '. '.join(parts)+'. Use these patterns to review channel capacity and timing; they are activity signals, not proof of service quality.'
+
+
 def design_report(
     report_plan: dict[str, Any], analysis: dict[str, Any], intelligence: dict[str, Any],
     audience_view: dict[str, Any], period: Any, period_evidence: dict[str, Any] | None = None,
@@ -204,6 +271,9 @@ def design_report(
     team = report_plan.get('requesting_team', '')
     explicit = set(report_plan.get('explicit_focus', []) or [])
     ptype = getattr(period, 'period_type', 'Daily')
+    analysis_mode = report_plan.get('analysis_mode', 'Normal Analysis')
+    maturity_plan = report_plan.get('maturity_plan', {}) or {}
+    extreme = report_plan.get('extreme_analysis', {}) or {}
     slides: list[dict[str, Any]] = []
     slides.append({'type':'cover','title':f"{report_plan.get('department','Report')} Operations & Analytics Report",
                    'subtitle':report_plan.get('period_label','Selected reporting period')})
@@ -256,20 +326,20 @@ def design_report(
             slides.append({'type':'coverage','title':'Ward & Geographic Coverage','value':sd.get('running_wards',evidence.get('distinct_wards')),
                            'total':summary.get('total_wards'),'corridor':analysis.get('corridor_coverage',pd.DataFrame()).to_dict('records') if isinstance(analysis.get('corridor_coverage'),pd.DataFrame) else [],
                            'cca':analysis.get('cca_coverage',pd.DataFrame()).to_dict('records') if isinstance(analysis.get('cca_coverage'),pd.DataFrame) else [],
-                           'missing': summary.get('missing_wards')})
+                           'missing': summary.get('missing_wards'), 'insight': _coverage_insight(evidence, summary, sd.get('running_wards', evidence.get('distinct_wards')))})
         # Channel + hourly activity are one mandatory daily operational view.
         if not evidence.get('channel',pd.DataFrame()).empty or not (analysis.get('dates',{}) or {}).get('by_hour',pd.DataFrame()).empty:
             slides.append({'type':'channel_time','title':'Channel & Hourly Activity',
                            'channel':evidence.get('channel',pd.DataFrame()).to_dict('records'),
-                           'hourly':(analysis.get('dates',{}) or {}).get('by_hour',pd.DataFrame()).to_dict('records')})
+                           'hourly':(analysis.get('dates',{}) or {}).get('by_hour',pd.DataFrame()).to_dict('records'), 'insight': _channel_time_insight(evidence.get('channel',pd.DataFrame()).to_dict('records'), (analysis.get('dates',{}) or {}).get('by_hour',pd.DataFrame()).to_dict('records'))})
         if not evidence.get('status',pd.DataFrame()).empty:
-            slides.append({'type':'breakdown','chart_type':'bar','title':'Workflow / Resolution Position','subtitle':'Daily status mix','data':evidence.get('status').to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'bar','title':'Case Status','subtitle':'Daily status mix','data':evidence.get('status').to_dict('records'), 'insight': _breakdown_insight(evidence.get('status').to_dict('records'),'status')})
         if not evidence.get('category1',pd.DataFrame()).empty:
-            slides.append({'type':'breakdown','chart_type':'bar','title':'Service & Demand Mix','subtitle':'Daily Case Category 1','data':evidence.get('category1').to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'bar','title':'Service Demand','subtitle':'Daily Case Category 1','data':evidence.get('category1').to_dict('records'), 'insight': _breakdown_insight(evidence.get('category1').to_dict('records'),'service category')})
         if not evidence.get('city',pd.DataFrame()).empty:
-            slides.append({'type':'breakdown','chart_type':'bar','title':'Location / Entity Performance','subtitle':'Daily location mix','data':evidence.get('city').to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'bar','title':'Cases by Location','subtitle':'Daily location mix','data':evidence.get('city').to_dict('records'), 'insight': _breakdown_insight(evidence.get('city').to_dict('records'),'location')})
         if not evidence.get('priority',pd.DataFrame()).empty:
-            slides.append({'type':'breakdown','chart_type':'bar','title':'Priority / Risk Position','subtitle':'Daily priority mix','data':evidence.get('priority').to_dict('records')})
+            slides.append({'type':'breakdown','chart_type':'bar','title':'Priority Mix','subtitle':'Daily priority mix','data':evidence.get('priority').to_dict('records'), 'insight': _breakdown_insight(evidence.get('priority').to_dict('records'),'priority segment')})
         q=analysis.get('quality',pd.DataFrame())
         if isinstance(q,pd.DataFrame) and not q.empty:
             slides.append({'type':'quality','title':'Data Quality & Limitations','data':q.head(8).to_dict('records')})
@@ -309,24 +379,38 @@ def design_report(
             chosen.append(item); used.append(item[2])
             if len(chosen)>=max_analytic: break
         for _,title,focus,key,mat in chosen:
-            if title=='Geographic / Coverage Position': slides.append({'type':'coverage','title':title,'value':evidence.get('distinct_wards'),'total':analysis.get('summary',{}).get('total_wards'),'corridor':[],'cca':[]})
-            elif title=='Case Workflow / Resolution Position': slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Period-aligned status mix','data':evidence.get('status',pd.DataFrame()).to_dict('records')})
-            elif title=='Service and Demand Mix': slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Leading Case Category 1','data':evidence.get('category1',pd.DataFrame()).to_dict('records')})
-            elif title=='Channel and Time Activity': slides.append({'type':'channel_time','title':title,'channel':evidence.get('channel',pd.DataFrame()).to_dict('records'),'hourly':(analysis.get('dates',{}) or {}).get('by_hour',pd.DataFrame()).to_dict('records')})
-            elif title=='Location / Entity Performance': slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Period location mix','data':evidence.get('city',pd.DataFrame()).to_dict('records')})
-            elif title=='Priority / Risk Position': slides.append({'type':'breakdown','chart_type':'bar','title':title,'subtitle':'Period priority mix','data':evidence.get('priority',pd.DataFrame()).to_dict('records')})
+            if title=='Geographic / Coverage Position': slides.append({'type':'coverage','title':title,'value':evidence.get('distinct_wards'),'total':analysis.get('summary',{}).get('total_wards'),'corridor':[],'cca':[], 'insight': _coverage_insight(evidence, analysis.get('summary',{}))})
+            elif title=='Case Workflow / Resolution Position': slides.append({'type':'breakdown','chart_type':'bar','title':'Case Status','subtitle':'Period status mix','data':evidence.get('status',pd.DataFrame()).to_dict('records'), 'insight': _breakdown_insight(evidence.get('status',pd.DataFrame()).to_dict('records'),'status')})
+            elif title=='Service and Demand Mix': slides.append({'type':'breakdown','chart_type':'bar','title':'Service Demand','subtitle':'Leading service categories','data':evidence.get('category1',pd.DataFrame()).to_dict('records'), 'insight': _breakdown_insight(evidence.get('category1',pd.DataFrame()).to_dict('records'),'service category')})
+            elif title=='Channel and Time Activity': slides.append({'type':'channel_time','title':title,'channel':evidence.get('channel',pd.DataFrame()).to_dict('records'),'hourly':(analysis.get('dates',{}) or {}).get('by_hour',pd.DataFrame()).to_dict('records'), 'insight': _channel_time_insight(evidence.get('channel',pd.DataFrame()).to_dict('records'), (analysis.get('dates',{}) or {}).get('by_hour',pd.DataFrame()).to_dict('records'))})
+            elif title=='Location / Entity Performance': slides.append({'type':'breakdown','chart_type':'bar','title':'Cases by Location','subtitle':'Period location mix','data':evidence.get('city',pd.DataFrame()).to_dict('records'), 'insight': _breakdown_insight(evidence.get('city',pd.DataFrame()).to_dict('records'),'location')})
+            elif title=='Priority / Risk Position': slides.append({'type':'breakdown','chart_type':'bar','title':'Priority Mix','subtitle':'Period priority mix','data':evidence.get('priority',pd.DataFrame()).to_dict('records'), 'insight': _breakdown_insight(evidence.get('priority',pd.DataFrame()).to_dict('records'),'priority segment')})
             elif title=='Voice of Citizen': slides.append({'type':'voc','title':title,'data':voc_analysis})
             elif title=='Data Quality and Limitations':
                 q=analysis.get('quality',pd.DataFrame()); slides.append({'type':'quality','title':title,'data':q.head(8).to_dict('records')})
+
+    if analysis_mode == 'Extreme Analysis':
+        ex = ai.get('extreme_analysis', {}) or {}
+        pareto = ex.get('pareto', pd.DataFrame())
+        fishbone = ex.get('fishbone', pd.DataFrame())
+        five = ex.get('five_whys', pd.DataFrame())
+        pred = ex.get('predictive', {}) or {}
+        pred_series = ex.get('predictive_series', pd.DataFrame())
+        if isinstance(pareto, pd.DataFrame) and not pareto.empty:
+            slides.append({'type':'extreme_diagnostic_pareto','title':'Extreme Analysis — Pareto Priority Screen','subtitle':f'Largest concentration segments — {ex.get("pareto_dimension", "selected dimension")}', 'pareto':pareto.to_dict('records')})
+            slides.append({'type':'extreme_diagnostic_framework','title':'Extreme Analysis — Diagnostic Investigation','subtitle':'Fishbone cause framework + Five Whys prompts','fishbone':fishbone.to_dict('records') if isinstance(fishbone,pd.DataFrame) else [],'five_whys':five.to_dict('records') if isinstance(five,pd.DataFrame) else []})
+        if pred.get('available'):
+            slides.append({'type':'extreme_predictive','title':'Extreme Analysis — Predictive Outlook','subtitle':'Evidence-gated historical trend screen','predictive':pred,'series':pred_series.to_dict('records') if isinstance(pred_series,pd.DataFrame) else []})
+        slides.append({'type':'extreme_optimisation','title':'Extreme Analysis — Optimisation & Control Review','subtitle':'Corrective / preventive action candidates','findings':ex.get('findings',pd.DataFrame()).to_dict('records') if isinstance(ex.get('findings'),pd.DataFrame) else [],'gaps':maturity_plan.get('evidence_gaps',[])})
 
     slides.append({'type':'actions','title':'Actions and Management Decisions','data':actions[:6]})
     slides.append({'type':'method','title':'Evidence and Method Note','items':report_plan.get('addendum_items',[])[:8]})
     return {
         'version':'1.3','department':report_plan.get('department'),'requesting_team':team,'entity_context':report_plan.get('entity_context',{}),
         'audience':audience,'period_type':ptype,'period_label':getattr(period,'label','Selected reporting period'),'slides':slides,
-        'period_evidence':evidence,'period_findings':findings,'period_actions':actions,'analytical_intelligence':ai,'decision_intelligence':di,
+        'period_evidence':evidence,'period_findings':findings,'period_actions':actions,'analytical_intelligence':ai,'decision_intelligence':di,'extreme_analysis':extreme,'analysis_mode':analysis_mode,'maturity_plan':maturity_plan,
         'selection_log':[],'rules':{'no_fabrication':True,'main_report_concise':True,'detailed_evidence_in_addendum':True,
         'mandatory_daily_operations_framework':ptype=='Daily','layout_safe_text_v3_8':True,'no_overlapping_text_v3_8':True,
         'materiality_driven_selection':ptype!='Daily','audience_driven_selection':True,'avoid_single_point_trends':True,
-        'analytical_intelligence_v3_4':bool(ai),'business_implication_required':True,'decision_action_governance_v3_6':bool(di),'actions_require_evidence':True}
+        'analytical_intelligence_v3_4':bool(ai),'business_implication_required':True,'decision_action_governance_v3_6':bool(di),'actions_require_evidence':True,'analysis_mode':analysis_mode,'extreme_analysis_evidence_gated':analysis_mode=='Extreme Analysis','analytical_maturity_v3_9':True}
     }

@@ -124,13 +124,6 @@ def build_intelligence(analysis: dict[str, Any], total_wards: int | None = None)
         d("E-006","F-006","Observed time window","Not supplied","No valid Created On records on the selected reporting date")
     d("E-007","F-007","Quality findings",len(quality),"Count of deterministic quality findings")
     d("E-007","F-007","High severity findings",int((quality["severity"]=="High").sum()) if not quality.empty and "severity" in quality else 0,"Count where severity=High")
-    # Keep the evidence register traceable even when the selected reporting date
-    # contains no usable channel rows. E-004 remains a valid evidence definition,
-    # but its detail must explicitly state that the channel metric is unavailable.
-    if not channel.empty:
-        pass
-    else:
-        d("E-004","F-004","Channel activity", "Not available", "No valid Channel records were available for the selected reporting date")
     ddf=pd.DataFrame(details)
     qa=[]; valid=set(evidence["id"])
     for _,r in fdf.iterrows(): qa.append({"check":"Finding evidence reference","item":r["id"],"status":"PASS" if r["evidence_ref"] in valid else "FAIL"})

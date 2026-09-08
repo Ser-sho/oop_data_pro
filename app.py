@@ -25,10 +25,11 @@ from analytical_intelligence import build_analytical_intelligence
 from decision_intelligence import build_decision_intelligence
 from entity_config import build_entity_context, validate_entity_context, ENTITY_PRESETS
 from auto_ppt_generator import generate_auto_powerpoint
+from maturity_engine import build_maturity_plan, build_extreme_analysis
 
 st.set_page_config(page_title="OOP Corridor Daily Operations Report", layout="wide")
 st.title("Dynamic Operations & Analytics Reporting System")
-st.caption("V3.7 — Multi-entity / multi-team configuration + evidence-led report design")
+st.caption("V3.12 — Adaptive evidence addendum + Insight/RAG + Extreme Analysis")
 
 with st.sidebar:
     st.header("Report controls")
@@ -46,6 +47,9 @@ with st.sidebar:
     period_covered = st.text_input("Period covered (optional display text)", placeholder="e.g. Q3 2026 or Friday 21 Aug 2026")
     close_time = st.time_input("Data close time", value=time(17, 0))
     audience = st.selectbox("Report audience", ["Executive management", "Operations management", "Analyst", "Custom"])
+    analysis_mode = st.radio("Analysis mode", ["Normal Analysis", "Extreme Analysis"], index=0, help="Normal Analysis preserves the standard workflow. Extreme Analysis activates the CIC maturity ladder, including Pareto, Fishbone, Five Whys, control-gap review, predictive screening and optimisation where evidence supports them.")
+    if analysis_mode == "Extreme Analysis":
+        st.warning("Extreme Analysis activates deeper diagnostic/predictive/optimisation methods. The system will still hold back any method that the available evidence cannot support.")
     report_requirements = st.text_area("Reporting requirements (optional)", placeholder="e.g. Focus on ward coverage, service demand, unresolved cases and actions.")
     ward_master_uploaded = st.file_uploader("Ward master / CCA allocation (optional)", type=["xlsx", "xls"], key="ward_master")
     st.info("Reporting date and close time are manual. They are never inferred from the latest data timestamp.")
@@ -370,33 +374,62 @@ if template_path is not None:
             st.warning(rec)
 
 
-st.subheader("Final Report QA")
-qa_template_assessment = locals().get("template_assessment", None)
-final_qa = run_report_qa(
-    analysis,
-    intelligence,
-    audience_view,
-    template_assessment=qa_template_assessment,
-    report_requirements=report_requirements,
-)
-status = qa_status(final_qa)
-if status == "READY FOR REVIEW":
-    st.success("🟢 READY FOR REVIEW — all blocking QA checks passed.")
-elif status == "REVIEW REQUIRED":
-    st.warning("🟠 REVIEW REQUIRED — warnings must be reviewed before circulation.")
-else:
-    st.error("🔴 REPORT BLOCKED — one or more critical QA checks failed.")
-st.dataframe(final_qa, use_container_width=True, hide_index=True)
-
 st.subheader("Automatic Report Designer")
 period_evidence = build_period_evidence(analysis, reporting_period)
+maturity_plan = build_maturity_plan(
+    analysis, period_evidence, period_type=reporting_period.period_type, audience=audience,
+    analysis_mode=analysis_mode, requirements=report_requirements
+)
+extreme_analysis = build_extreme_analysis(analysis, period_evidence, maturity_plan)
 analytical_intelligence = build_analytical_intelligence(
     analysis, period_evidence, period_summary=period_summary, report_plan=report_plan,
     audience=audience, requesting_team=requesting_team
 )
+# V3.10 is additive: normal findings remain intact; extreme findings are appended only when selected.
+if extreme_analysis.get("enabled"):
+    for key in ("findings", "recommendations", "evidence"):
+        base = analytical_intelligence.get(key, pd.DataFrame())
+        extra = extreme_analysis.get(key, pd.DataFrame())
+        if isinstance(extra, pd.DataFrame) and not extra.empty:
+            analytical_intelligence[key] = pd.concat([base, extra], ignore_index=True) if isinstance(base, pd.DataFrame) else extra.copy()
+    analytical_intelligence["version"] = "3.10"
+    analytical_intelligence["maturity_plan"] = maturity_plan
+    analytical_intelligence["extreme_analysis"] = extreme_analysis
+    # Re-rank combined findings while preserving the original IDs.
+    if isinstance(analytical_intelligence.get("findings"), pd.DataFrame) and not analytical_intelligence["findings"].empty:
+        order={"High":0,"Normal":1,"Low":2}
+        analytical_intelligence["findings"] = analytical_intelligence["findings"].sort_values(
+            by=["priority"], key=lambda s:s.map(order).fillna(9) if s.name=="priority" else s
+        ).reset_index(drop=True)
+        analytical_intelligence["findings"]["rank"] = range(1, len(analytical_intelligence["findings"])+1)
+        analytical_intelligence["decision_summary"] = dict(analytical_intelligence.get("decision_summary", {}), finding_count=len(analytical_intelligence["findings"]))
 decision_intelligence = build_decision_intelligence(analytical_intelligence, requesting_team=requesting_team, audience=audience)
 
-st.subheader("V3.4 Analytical Intelligence")
+st.subheader("Analysis Mode & Analytical Maturity")
+mc1, mc2, mc3, mc4 = st.columns(4)
+mc1.metric("Mode", analysis_mode)
+mc2.metric("Enabled levels", ", ".join(f"L{x}" for x in maturity_plan.get("enabled_levels", [])))
+mc3.metric("Historical days", maturity_plan.get("historical_days", 0))
+mc4.metric("Advanced tools", len(maturity_plan.get("enabled_tools", [])))
+st.caption(maturity_plan.get("rationale", ""))
+with st.expander("Analytical maturity controls"):
+    st.write({"requested_levels": maturity_plan.get("requested_levels"), "available_levels": maturity_plan.get("available_levels"), "enabled_levels": maturity_plan.get("enabled_levels"), "enabled_tools": maturity_plan.get("enabled_tools")})
+    if maturity_plan.get("evidence_gaps"):
+        st.dataframe(pd.DataFrame({"Evidence gate / limitation": maturity_plan["evidence_gaps"]}), use_container_width=True, hide_index=True)
+if analysis_mode == "Extreme Analysis":
+    st.subheader("Extreme Analysis — diagnostic / predictive / optimisation evidence")
+    ex_summary = extreme_analysis.get("summary", {})
+    st.success(f"Extreme Analysis active — {ex_summary.get('finding_count', 0)} deep finding(s); Pareto={'Yes' if ex_summary.get('pareto_available') else 'No'}, Fishbone={'Yes' if ex_summary.get('fishbone_available') else 'No'}, Five Whys={'Yes' if ex_summary.get('five_whys_available') else 'No'}, Predictive={'Yes' if ex_summary.get('predictive_available') else 'Held'}.")
+    st.dataframe(extreme_analysis.get("findings", pd.DataFrame()), use_container_width=True, hide_index=True)
+    with st.expander("Extreme evidence registers"):
+        st.dataframe(extreme_analysis.get("pareto", pd.DataFrame()), use_container_width=True, hide_index=True)
+        st.dataframe(extreme_analysis.get("fishbone", pd.DataFrame()), use_container_width=True, hide_index=True)
+        st.dataframe(extreme_analysis.get("five_whys", pd.DataFrame()), use_container_width=True, hide_index=True)
+        st.dataframe(extreme_analysis.get("predictive_series", pd.DataFrame()), use_container_width=True, hide_index=True)
+        st.dataframe(extreme_analysis.get("evidence", pd.DataFrame()), use_container_width=True, hide_index=True)
+        st.dataframe(extreme_analysis.get("qa", pd.DataFrame()), use_container_width=True, hide_index=True)
+
+st.subheader("Analytical Intelligence")
 ai_qa_pass = analytical_intelligence["qa"]["status"].eq("PASS").all() if not analytical_intelligence["qa"].empty else True
 if ai_qa_pass:
     st.success(f"🟢 Analytical intelligence ready — {len(analytical_intelligence['findings'])} evidence-backed finding(s); {analytical_intelligence.get('decision_summary', {}).get('decision_ready_high_priority', 0)} high-priority finding(s) are decision-ready.")
@@ -408,7 +441,7 @@ with st.expander("V3.4 recommendations and evidence"):
     st.dataframe(analytical_intelligence["evidence"], use_container_width=True, hide_index=True)
     st.dataframe(analytical_intelligence["qa"], use_container_width=True, hide_index=True)
 
-st.subheader("V3.6 Decision & Action Intelligence")
+st.subheader("Decision & Action Intelligence")
 di_qa_pass = decision_intelligence["qa"]["status"].eq("PASS").all() if not decision_intelligence["qa"].empty else True
 if di_qa_pass:
     st.success(f"🟢 Action governance ready — {decision_intelligence['summary']['action_count']} action(s); {decision_intelligence['summary']['review_before_decision']} require evidence review before decision.")
@@ -419,6 +452,9 @@ with st.expander("Escalation register and decision controls"):
     st.dataframe(decision_intelligence["escalations"], use_container_width=True, hide_index=True)
     st.dataframe(decision_intelligence["qa"], use_container_width=True, hide_index=True)
 
+report_plan["analysis_mode"] = analysis_mode
+report_plan["maturity_plan"] = maturity_plan
+report_plan["extreme_analysis"] = extreme_analysis
 blueprint = design_report(
     report_plan, analysis, intelligence, audience_view, reporting_period,
     period_evidence=period_evidence, period_summary=period_summary, voc_analysis=voc_analysis,
@@ -434,6 +470,43 @@ st.dataframe(pd.DataFrame([{
 } for i, slide in enumerate(blueprint["slides"])]), use_container_width=True, hide_index=True)
 with st.expander("Automatic designer QA"):
     st.dataframe(blueprint_qa, use_container_width=True, hide_index=True)
+
+# V3.10: final QA is intentionally assembled after maturity, intelligence,
+# decision governance and blueprint validation so the circulation gate reflects
+# the complete generated report package rather than only the raw dataset checks.
+final_qa = run_report_qa(
+    analysis,
+    intelligence,
+    audience_view,
+    template_assessment=template_assessment if template_path is not None else None,
+    report_requirements=report_requirements,
+)
+
+def _append_qa_rows(base, rows):
+    extra = pd.DataFrame(rows)
+    if extra.empty:
+        return base
+    return pd.concat([base, extra], ignore_index=True)
+
+extreme_qa_fail = int((extreme_analysis.get("qa", pd.DataFrame()).get("status", pd.Series(dtype=str)) == "FAIL").sum()) if isinstance(extreme_analysis.get("qa"), pd.DataFrame) else 0
+ai_qa_fail = int((analytical_intelligence.get("qa", pd.DataFrame()).get("status", pd.Series(dtype=str)) == "FAIL").sum()) if isinstance(analytical_intelligence.get("qa"), pd.DataFrame) else 0
+di_qa_fail = int((decision_intelligence.get("qa", pd.DataFrame()).get("status", pd.Series(dtype=str)) == "FAIL").sum()) if isinstance(decision_intelligence.get("qa"), pd.DataFrame) else 0
+blueprint_fail = int((blueprint_qa.get("status", pd.Series(dtype=str)) == "FAIL").sum()) if isinstance(blueprint_qa, pd.DataFrame) else 0
+final_qa = _append_qa_rows(final_qa, [
+    {"check":"Analytical intelligence QA","status":"PASS" if ai_qa_fail == 0 else "FAIL","severity":"Critical" if ai_qa_fail else "Info","detail":f"{ai_qa_fail:,} analytical-intelligence QA failure(s)."},
+    {"check":"Decision/action governance QA","status":"PASS" if di_qa_fail == 0 else "FAIL","severity":"Critical" if di_qa_fail else "Info","detail":f"{di_qa_fail:,} decision/action QA failure(s)."},
+    {"check":"Extreme analysis QA","status":"PASS" if (not extreme_analysis.get("enabled") or extreme_qa_fail == 0) else "FAIL","severity":"Critical" if extreme_qa_fail else "Info","detail":("Extreme mode not selected." if not extreme_analysis.get("enabled") else f"{extreme_qa_fail:,} Extreme QA failure(s).")},
+    {"check":"Automatic blueprint QA","status":"PASS" if blueprint_fail == 0 else "FAIL","severity":"Critical" if blueprint_fail else "Info","detail":f"{blueprint_fail:,} blueprint QA failure(s)."},
+])
+status = qa_status(final_qa)
+st.subheader("Final Report QA")
+if status == "READY FOR REVIEW":
+    st.success("🟢 READY FOR REVIEW — all blocking QA checks passed.")
+elif status == "REVIEW REQUIRED":
+    st.warning("🟠 REVIEW REQUIRED — warnings must be reviewed before circulation.")
+else:
+    st.error("🔴 REPORT BLOCKED — one or more critical QA checks failed.")
+st.dataframe(final_qa, use_container_width=True, hide_index=True)
 
 if st.button("Generate Automatic PowerPoint", type="primary"):
     if status == "REPORT BLOCKED":
@@ -505,10 +578,29 @@ if st.button("Generate Excel Analytical Addendum"):
         intelligence_with_qa["v36_actions"] = decision_intelligence.get("actions")
         intelligence_with_qa["v36_escalations"] = decision_intelligence.get("escalations")
         intelligence_with_qa["v36_qa"] = decision_intelligence.get("qa")
-        generate_addendum(add_path, uploaded.name, sheet_name, analysis, intelligence_with_qa, municipality, reporting_date, period_covered, close_time.strftime("%H:%M"), voc_analysis=voc_analysis, entity_context=entity_context)
+        intelligence_with_qa["maturity_plan"] = maturity_plan
+        intelligence_with_qa["maturity_plan_df"] = pd.DataFrame([maturity_plan])
+        intelligence_with_qa["v39_extreme_findings"] = extreme_analysis.get("findings")
+        intelligence_with_qa["extreme_analysis"] = extreme_analysis
+        intelligence_with_qa["v39_extreme_recommendations"] = extreme_analysis.get("recommendations")
+        intelligence_with_qa["v39_pareto"] = extreme_analysis.get("pareto")
+        intelligence_with_qa["v39_segment_profile"] = extreme_analysis.get("segment_profile")
+        intelligence_with_qa["v39_diagnostic_relationships"] = extreme_analysis.get("diagnostic_relationships")
+        intelligence_with_qa["v39_fishbone"] = extreme_analysis.get("fishbone")
+        intelligence_with_qa["v39_five_whys"] = extreme_analysis.get("five_whys")
+        intelligence_with_qa["v39_predictive"] = extreme_analysis.get("predictive_series")
+        intelligence_with_qa["v39_evidence"] = extreme_analysis.get("evidence")
+        intelligence_with_qa["v39_qa"] = extreme_analysis.get("qa")
+        generate_addendum(
+            add_path, uploaded.name, sheet_name, analysis, intelligence_with_qa, municipality, reporting_date,
+            period_covered, close_time.strftime("%H:%M"), voc_analysis=voc_analysis, entity_context=entity_context,
+            period_evidence=period_evidence, reporting_period=reporting_period, analysis_mode=analysis_mode,
+            audience=audience, requesting_team=requesting_team, report_requirements=report_requirements,
+            period_summary=period_summary
+        )
         st.success("Excel analytical addendum generated successfully.")
         st.download_button("Download Excel addendum", data=add_path.read_bytes(), file_name=add_path.name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception as exc:
         st.error(f"Could not generate the addendum: {exc}")
 
-st.caption("V3.6: decision/action intelligence adds governed action registers, escalation controls, verification steps and evidence-gated review. V3.5: evidence & decision intelligence separates facts, interpretations and actions, bounds confidence to evidence strength, and prevents weak evidence from being treated as decision-ready.")
+st.caption("V3.12: the addendum now adapts its evidence depth, charts and diagnostic registers to analysis mode, reporting period, audience, requesting team and stated requirements. Extreme Analysis adds separate diagnostic evidence sheets only when supported by the available data.")
