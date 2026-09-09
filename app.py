@@ -26,6 +26,7 @@ from decision_intelligence import build_decision_intelligence
 from entity_config import build_entity_context, validate_entity_context, ENTITY_PRESETS
 from auto_ppt_generator import generate_auto_powerpoint
 from maturity_engine import build_maturity_plan, build_extreme_analysis
+from systemic_intelligence import build_systemic_investigation
 
 st.set_page_config(page_title="OOP Corridor Daily Operations Report", layout="wide")
 st.title("Dynamic Operations & Analytics Reporting System")
@@ -59,7 +60,10 @@ with st.sidebar:
         st.rerun()
 
 uploaded = st.file_uploader("Upload the operations dataset", type=["xlsx", "xls", "csv"])
-voc_uploaded = st.file_uploader("Upload VOC dataset (optional)", type=["xlsx", "xls", "csv"], key="voc_dataset")
+voc_uploaded = st.file_uploader("Upload VOC master survey (optional)", type=["xlsx", "xls", "csv"], key="voc_dataset")
+voc_happiness_uploaded = st.file_uploader("Upload VoC Happiness / resolution detail (optional)", type=["xlsx", "xls", "csv"], key="voc_happiness_detail")
+voc_detail_uploaded = st.file_uploader("Upload VoC Effort / Satisfaction / Promote detail (optional)", type=["xlsx", "xls", "csv"], key="voc_metric_detail")
+st.caption("VoC can use three linked evidence layers: the master survey, happiness/resolution detail, and effort/satisfaction/promotion detail. Case Ref is used for reconciliation where supplied; detail-only sources are never force-joined.")
 if uploaded is None:
     st.markdown("### Start here")
     st.write("Upload the SERSHO workbook or another corridor operations dataset.")
@@ -173,18 +177,26 @@ if ward_master.get("available") and analysis.get("ward_mapping") is not None:
             combined_hist = combined_hist.dropna(subset=["date","ward","corridor","cca"]).drop_duplicates(subset=["date","ward","corridor","cca"]).sort_values(["date","corridor","cca","ward"]).reset_index(drop=True)
             st.session_state["ward_history_by_scope"][history_key] = combined_hist
 
-voc_df = None
-if voc_uploaded is not None:
-    try:
-        if voc_uploaded.name.lower().endswith(".csv"):
-            voc_df = pd.read_csv(voc_uploaded, low_memory=False)
-        else:
-            vx = pd.ExcelFile(voc_uploaded)
-            voc_df = pd.read_excel(voc_uploaded, sheet_name=vx.sheet_names[0])
-        st.success(f"Loaded VOC dataset: {voc_uploaded.name}")
-    except Exception as exc:
-        st.error(f"Could not read the VOC file: {exc}")
-voc_analysis = analyze_voc(voc_df)
+def _read_optional_table(uploaded_file):
+    if uploaded_file is None:
+        return None
+    if uploaded_file.name.lower().endswith(".csv"):
+        return pd.read_csv(uploaded_file, low_memory=False)
+    book = pd.ExcelFile(uploaded_file)
+    return pd.read_excel(uploaded_file, sheet_name=book.sheet_names[0])
+
+voc_df = voc_happiness_df = voc_detail_df = None
+for label, uploaded_file, target in [("VOC master survey", voc_uploaded, "master"), ("VOC happiness detail", voc_happiness_uploaded, "happiness"), ("VOC metric detail", voc_detail_uploaded, "detail")]:
+    if uploaded_file is not None:
+        try:
+            data = _read_optional_table(uploaded_file)
+            if target == "master": voc_df = data
+            elif target == "happiness": voc_happiness_df = data
+            else: voc_detail_df = data
+            st.success(f"Loaded {label}: {uploaded_file.name}")
+        except Exception as exc:
+            st.error(f"Could not read {label}: {exc}")
+voc_analysis = analyze_voc(voc_df, voc_happiness_df, voc_detail_df)
 intelligence = build_intelligence(analysis, total_wards=int(total_wards) if total_wards else None)
 audience_view = build_audience_view(intelligence, audience, report_requirements)
 report_plan = build_report_plan(analysis, department, requesting_team, reporting_period, report_requirements, audience, voc_analysis, entity_context)
@@ -381,6 +393,10 @@ maturity_plan = build_maturity_plan(
     analysis_mode=analysis_mode, requirements=report_requirements
 )
 extreme_analysis = build_extreme_analysis(analysis, period_evidence, maturity_plan)
+systemic_investigation = build_systemic_investigation(analysis, period_label=reporting_period.label)
+extreme_analysis["systemic_investigation"] = systemic_investigation
+extreme_analysis.setdefault("summary", {})["systemic_gate"] = systemic_investigation.get("gate", "HOLD")
+extreme_analysis["summary"]["systemic_investigation_available"] = systemic_investigation.get("gate") == "PASS"
 analytical_intelligence = build_analytical_intelligence(
     analysis, period_evidence, period_summary=period_summary, report_plan=report_plan,
     audience=audience, requesting_team=requesting_team
@@ -420,10 +436,15 @@ if analysis_mode == "Extreme Analysis":
     st.subheader("Extreme Analysis — diagnostic / predictive / optimisation evidence")
     ex_summary = extreme_analysis.get("summary", {})
     st.success(f"Extreme Analysis active — {ex_summary.get('finding_count', 0)} deep finding(s); Pareto={'Yes' if ex_summary.get('pareto_available') else 'No'}, Fishbone={'Yes' if ex_summary.get('fishbone_available') else 'No'}, Five Whys={'Yes' if ex_summary.get('five_whys_available') else 'No'}, Predictive={'Yes' if ex_summary.get('predictive_available') else 'Held'}.")
+    st.info(f"Systemic issue gate: {ex_summary.get('systemic_gate', 'HOLD')} — {systemic_investigation.get('gate_reason','')}")
     st.dataframe(extreme_analysis.get("findings", pd.DataFrame()), use_container_width=True, hide_index=True)
     with st.expander("Extreme evidence registers"):
         st.dataframe(extreme_analysis.get("pareto", pd.DataFrame()), use_container_width=True, hide_index=True)
         st.dataframe(extreme_analysis.get("fishbone", pd.DataFrame()), use_container_width=True, hide_index=True)
+        st.dataframe(systemic_investigation.get("candidates", pd.DataFrame()), use_container_width=True, hide_index=True)
+        if systemic_investigation.get("gate") == "PASS":
+            st.dataframe(systemic_investigation.get("likely_causes", pd.DataFrame()), use_container_width=True, hide_index=True)
+            st.dataframe(systemic_investigation.get("five_whys", pd.DataFrame()), use_container_width=True, hide_index=True)
         st.dataframe(extreme_analysis.get("five_whys", pd.DataFrame()), use_container_width=True, hide_index=True)
         st.dataframe(extreme_analysis.get("predictive_series", pd.DataFrame()), use_container_width=True, hide_index=True)
         st.dataframe(extreme_analysis.get("evidence", pd.DataFrame()), use_container_width=True, hide_index=True)
@@ -496,6 +517,7 @@ final_qa = _append_qa_rows(final_qa, [
     {"check":"Analytical intelligence QA","status":"PASS" if ai_qa_fail == 0 else "FAIL","severity":"Critical" if ai_qa_fail else "Info","detail":f"{ai_qa_fail:,} analytical-intelligence QA failure(s)."},
     {"check":"Decision/action governance QA","status":"PASS" if di_qa_fail == 0 else "FAIL","severity":"Critical" if di_qa_fail else "Info","detail":f"{di_qa_fail:,} decision/action QA failure(s)."},
     {"check":"Extreme analysis QA","status":"PASS" if (not extreme_analysis.get("enabled") or extreme_qa_fail == 0) else "FAIL","severity":"Critical" if extreme_qa_fail else "Info","detail":("Extreme mode not selected." if not extreme_analysis.get("enabled") else f"{extreme_qa_fail:,} Extreme QA failure(s).")},
+    {"check":"Systemic issue evidence gate","status":"PASS" if (not extreme_analysis.get("enabled") or systemic_investigation.get("gate") in {"PASS","REVIEW","HOLD"}) else "FAIL","severity":"Info","detail":f"Systemicity gate: {systemic_investigation.get('gate','HOLD')}. {systemic_investigation.get('gate_reason','')}"},
     {"check":"Automatic blueprint QA","status":"PASS" if blueprint_fail == 0 else "FAIL","severity":"Critical" if blueprint_fail else "Info","detail":f"{blueprint_fail:,} blueprint QA failure(s)."},
 ])
 status = qa_status(final_qa)
@@ -589,6 +611,7 @@ if st.button("Generate Excel Analytical Addendum"):
         intelligence_with_qa["v39_fishbone"] = extreme_analysis.get("fishbone")
         intelligence_with_qa["v39_five_whys"] = extreme_analysis.get("five_whys")
         intelligence_with_qa["v39_predictive"] = extreme_analysis.get("predictive_series")
+        intelligence_with_qa["v314_systemic_investigation"] = systemic_investigation
         intelligence_with_qa["v39_evidence"] = extreme_analysis.get("evidence")
         intelligence_with_qa["v39_qa"] = extreme_analysis.get("qa")
         generate_addendum(

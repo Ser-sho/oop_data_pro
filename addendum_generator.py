@@ -330,6 +330,7 @@ def _extreme_registers(intelligence: dict[str, Any]) -> dict[str, pd.DataFrame]:
         'predictive': _frame(ex.get('predictive_series')),
         'evidence': _frame(ex.get('evidence')),
         'qa': _frame(ex.get('qa')),
+        'systemic': ex.get('systemic_investigation', {}) if isinstance(ex.get('systemic_investigation', {}), dict) else {},
     }
 
 
@@ -612,6 +613,26 @@ def generate_addendum(
             _write_table(ws, rr, ex['five_whys'], 'Five Whys — evidence and verification chain')
         _write_insight(ws, ws.max_row + 1, 'Caution', 'Fishbone and Five Whys are structured investigation frameworks. Candidate causes remain hypotheses until supported by process records, narratives, ownership evidence or other corroborating data.', 'Amber')
         _style_sheet(ws, 'Amber')
+
+        # Systemic issue / Fishbone worksheet — only when the historical evidence gate passes.
+        systemic = ex.get('systemic_investigation', {}) if isinstance(ex, dict) else {}
+        if isinstance(systemic, dict) and systemic.get('gate') == 'PASS':
+            ws = wb.create_sheet('Systemic Issue Investigation')
+            _write_insight(ws, 1, 'Systemicity gate', f"PASS — {systemic.get('gate_reason','')}", 'Amber')
+            row = 4
+            _write_table(ws, row, _frame(systemic.get('worksheet')), 'Fishbone-compatible matter summary')
+            row = ws.max_row + 2
+            _write_table(ws, row, _frame(systemic.get('candidates')).head(top_n), 'Historical systemic-pattern candidates')
+            row = ws.max_row + 2
+            _write_table(ws, row, _frame(systemic.get('fishbone')), 'Systemic Fishbone evidence map')
+            row = ws.max_row + 2
+            _write_table(ws, row, _frame(systemic.get('likely_causes')), 'Likely causes and validation status')
+            row = ws.max_row + 2
+            _write_table(ws, row, _frame(systemic.get('five_whys')), 'Five Whys validation chain')
+            row = ws.max_row + 2
+            _write_table(ws, row, _frame(systemic.get('actions')), 'Corrective / preventive action register', rag_col='RAG' if 'RAG' in _frame(systemic.get('actions')).columns else None)
+            _write_insight(ws, ws.max_row + 1, 'Control rule', 'This worksheet follows the supplied Fishbone structure concept: systemicity must be demonstrated first; likely causes are hypotheses; confirmed root cause remains No until independently validated; owners and dates are not invented.', 'Amber')
+            _style_sheet(ws, 'Amber')
 
         # 13. Predictive & Control Outlook
         ws = wb.create_sheet('Predictive & Control Outlook')
